@@ -337,9 +337,9 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if (clear || vectors) {vectorCache.clear();knowledgeVectorCache.clear();}
     clearTimeout(vectorTimer);vectorTimer=null;vectorCheckVersion++;
     vectorJob?.cancel();
-    state.vectorIndex={status:workspace?.isCurrent()?'not_checked':'no_chat'};
+    state.vectorIndex={status:workspace?.isCurrent()?(core.settings.vectorEnabled?'not_checked':'disabled'):'no_chat'};
     state.batchVectors={};
-    if(!disposed&&workspace?.isCurrent())vectorTimer=setTimeout(()=>{vectorTimer=null;void refreshVectorStatus({schedule:scheduleVectors});},250);
+    if(!disposed&&core.settings.vectorEnabled&&workspace?.isCurrent())vectorTimer=setTimeout(()=>{vectorTimer=null;void refreshVectorStatus({schedule:scheduleVectors});},250);
   }
   function vectorCards({all=false}={}){return selectRecallCards([...state.cards,...knowledgeCache.filter(c=>!state.hidden.includes(c.id))],core.settings).filter(c=>c.vectorEligible!==false&&(all||!vectorExcluded.includes(c.id)));}
   async function combinedVectorEntries(bound,key,{globalKey=key,signal}={}){
@@ -381,14 +381,26 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   host.document?.addEventListener?.('visibilitychange',resumeVectorMaintenance);
   host.addEventListener?.('online',resumeVectorMaintenance);host.addEventListener?.('offline',resumeVectorMaintenance);
   async function refreshVectorStatus({schedule=false,cached=false}={}){
+    // A disabled optional lane must stop before resolving its client, reading
+    // persisted vector pages or traversing cards, including navigation checks.
+    if(!core.settings.vectorEnabled){
+      vectorCheckVersion++;clearTimeout(vectorTimer);vectorTimer=null;vectorJob?.cancel();
+      state.vectorIndex={status:workspace?.isCurrent()&&!state.stale?'disabled':'no_chat'};
+      state.batchVectors={};notify();return clone(state.vectorIndex);
+    }
     // Page navigation can reuse a recent completed check. Explicit refresh and
     // invalidation/build paths still read the store and verify every entry.
     if(cached&&workspace?.isCurrent()&&!state.stale&&state.vectorIndex?.checkedAt&&Date.now()-state.vectorIndex.checkedAt<5000)return state.vectorIndex;
     const version=++vectorCheckVersion,token=epoch,revision=recallRevision,bound=workspace;
     if(!bound?.isCurrent()||state.stale){state.vectorIndex={status:'no_chat'};notify();return state.vectorIndex;}
+    const current=()=>core.settings.vectorEnabled&&version===vectorCheckVersion&&token===epoch&&revision===recallRevision&&bound.isCurrent();
     try{
       const c=client('embedding'),fingerprint=sha256({endpoint:c.profile.url,model:c.profile.model}),key=`vectors-${fingerprint.slice(0,20)}`;
-      const jobs=normalizeVectorJobs(await bound.read(vectorJobKey(key),null)),cards=vectorCards(),entries=await combinedVectorEntries(bound,jobs.rebuilding?vectorStagingKey(key):key,{globalKey:key}),coverage=vectorIndexCoverage(cards,entries,card=>vectorCache.hash(card));
+      const jobs=normalizeVectorJobs(await bound.read(vectorJobKey(key),null));
+      if(!current())return;
+      const cards=vectorCards(),entries=await combinedVectorEntries(bound,jobs.rebuilding?vectorStagingKey(key):key,{globalKey:key});
+      if(!current())return;
+      const coverage=vectorIndexCoverage(cards,entries,card=>vectorCache.hash(card));
       const hash=card=>vectorCache.hash(card),failure=vectorFailureCounts(cards,entries,jobs,hash);
       const storageFailure=vectorStorageFailure?.workspace===bound&&vectorStorageFailure.key===key?vectorStorageFailure.error:null;
       if(version!==vectorCheckVersion||token!==epoch||revision!==recallRevision||!bound.isCurrent())return;
