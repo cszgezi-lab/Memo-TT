@@ -1,0 +1,26 @@
+{
+  "name": "Memo-TT",
+  "display_name": "Memo",
+  "author": "Shiyi Memory",
+  "description": "Memo：独立聊天记忆、动态人设与召回。",
+  "version": "1.0.0",
+  "homePage": "https://github.com/cszgezi-lab/Memo-TT",
+  "auto_update": true,
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "ui/product-view.css",
+  "entry": "index.js",
+  "style": "ui/product-view.css",
+  "hooks": {
+    "activate": "init"
+  },
+  "permissions": [],
+  "dataPolicy": {
+    "chatCreation": false,
+    "automaticInjection": "enabled-by-default-configurable",
+    "credentials": "device-local-separate-store",
+    "network": "configured-provider-actions-and-automatic-summary"
+  }
+}
