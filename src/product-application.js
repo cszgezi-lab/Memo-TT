@@ -663,7 +663,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     await stopListeners(); checkOpen(); await clearPrompt(); checkOpen();
     hostAdapter ??= new HostAdapter(host);
     workspace=null;boundScope=null;boundRefKey=null;state.cards=[];state.records={};state.batches=[];state.deletedRecords=[];state.progress='';modules.clear();state.status='loading';notify();
-    const result = await core.bindCurrentChat({expectedRef:target});
+    const result = await core.bindCurrentChat({expectedRef:target,signal:opener.signal,check:checkOpen});
     await checkTarget();
     if (result.status !== 'ready' || result.persistence !== 'available') throw Object.assign(new Error((core.readViewState?.()??core.state).errorMessage ?? '当前聊天尚未保存或宿主存储不可用'),{code:result.errorCode??'PERSISTENCE_UNAVAILABLE'});
     if(passive&&sourceContextComplete)await settledHistoryTail();checkOpen();

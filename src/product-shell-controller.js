@@ -403,7 +403,7 @@ export function createProductShellController({
       try {
         const session = await captureProductHostSession(adapterInstance, { accountId: options.accountId ?? accountId, branchId: options.branchId ?? branchId });
         if(!matchesExpected(session.ref))throw Object.assign(new Error('聊天已切换'),{code:'CHAT_CHANGED'});
-        await adapterInstance.prepareLegacyMemory?.(session);
+        await adapterInstance.prepareLegacyMemory?.(session,{signal:options.signal,check:options.check});
         if(!matchesExpected(session.ref))throw Object.assign(new Error('聊天已切换'),{code:'CHAT_CHANGED'});
         state.session = session;
         state.scope = clone(session.scope);

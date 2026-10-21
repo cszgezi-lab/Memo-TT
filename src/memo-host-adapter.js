@@ -1,6 +1,7 @@
 import { createMemoIdentity } from './memo-identity.js';
 import {prepareLegacyMemory as prepareMemoLegacyMemory,prepareLegacyGlobal,LEGACY_MEMORY_NAMESPACES,optionalLegacyRead} from './memo-legacy-memory.js';
 import {stableStringify} from './utils.js';
+import {runStorageOperation} from './reliable-storage.js';
 
 const adapterCache = new WeakMap();
 const wrapperOwners = new WeakMap();
@@ -72,7 +73,7 @@ export function createMemoHostAdapter(adapter, { edition, identity, disposeUnder
   const listeners = new Set(), promptKeys = new Map(), pendingPrompts = new Set();
   let disposed = false, disposal, status = 'active';
   const globalPreparations=new WeakMap();
-  const legacyGlobal=async()=>typeof adapter.legacyGlobalStore==='function'?adapter.legacyGlobalStore():adapter.getStore?.({scope:'extension'});
+  const legacyGlobal=async()=>runStorageOperation(()=>typeof adapter.legacyGlobalStore==='function'?adapter.legacyGlobalStore():adapter.getStore?.({scope:'extension'}),{waitMs:10000,storageArtifact:'legacy_memory'});
   const check = () => { if (disposed) throw closed(); };
   const address = (args,context) => {
     if (!object(args) || Array.isArray(args)) throw new TypeError('Memo store address is required');
@@ -122,16 +123,16 @@ export function createMemoHostAdapter(adapter, { edition, identity, disposeUnder
 
   const overrides = new Map([
     ['memoIdentity', identity],
-    ['prepareLegacyMemory', async session=>{
+    ['prepareLegacyMemory', async (session,options={})=>{
       check();const context=contexts.get(session.handle);if(!context)throw new TypeError('Memo legacy import requires its captured handle');
-      const current=async()=>{check();if(stableStringify(await adapter.currentRef())!==session.refKey)throw Object.assign(new Error('聊天已切换，旧成果接续未激活'),{code:'CHAT_CHANGED'});};await current();
-      const completed=await prepareMemoLegacyMemory({source:null,target:context.handle.store,scope:session.scope,identity,check:current});if(completed.status==='imported'){context.namespacePrefix=completed.namespacePrefix;return {status:'imported',documents:completed.receipt.documents};}
-      const legacy=typeof adapter.legacyMemorySource==='function'?await adapter.legacyMemorySource(session):{store:context.handle.store,scope:session.scope};if(!legacy)return {status:'absent'};
+      const current=async()=>{check();options.check?.();if(options.signal?.aborted)throw Object.assign(new Error('旧成果读取已停止'),{code:'CANCELED'});if(stableStringify(await adapter.currentRef())!==session.refKey)throw Object.assign(new Error('聊天已切换，旧成果接续未激活'),{code:'CHAT_CHANGED'});options.check?.();};await current();
+      const completed=await prepareMemoLegacyMemory({source:null,target:context.handle.store,scope:session.scope,identity,check:current,signal:options.signal});if(completed.status==='imported'){context.namespacePrefix=completed.namespacePrefix;return {status:'imported',documents:completed.receipt.documents};}
+      const legacy=typeof adapter.legacyMemorySource==='function'?await runStorageOperation(()=>adapter.legacyMemorySource(session),{signal:options.signal,waitMs:10000,storageArtifact:'legacy_memory'}):{store:context.handle.store,scope:session.scope};if(!legacy)return {status:'absent'};
       if(stableStringify(legacy.scope)!==stableStringify(session.scope))throw Object.assign(new Error('旧成果身份与当前聊天不一致'),{code:'SCOPE_CONFLICT'});
-      const global=await legacyGlobal(),oldSettings=global?await optionalLegacyRead(global,{namespace:'shiyi-product-global',key:'settings-v1'}):null;
-      const result=await prepareMemoLegacyMemory({source:legacy.store,target:context.handle.store,scope:session.scope,identity,check:current,sourceSettings:legacy.settings??oldSettings?.value?.settings??{}});await current();context.namespacePrefix=result.namespacePrefix??null;return {status:result.status,documents:result.receipt?.documents??0};
+      const global=await legacyGlobal(),oldSettings=global?await runStorageOperation(()=>optionalLegacyRead(global,{namespace:'shiyi-product-global',key:'settings-v1'}),{signal:options.signal,waitMs:10000,storageArtifact:'legacy_memory'}):null;
+      const result=await prepareMemoLegacyMemory({source:legacy.store,target:context.handle.store,scope:session.scope,identity,check:current,signal:options.signal,sourceSettings:legacy.settings??oldSettings?.value?.settings??{}});await current();context.namespacePrefix=result.namespacePrefix??null;return {status:result.status,documents:result.receipt?.documents??0};
     }],
-    ['getStore', async (...args) => { check();const store=await adapter.getStore(...args);if(args[0]?.scope==='extension'){let pending=globalPreparations.get(store);if(!pending){pending=(async()=>{const source=await legacyGlobal();check();if(source)await prepareLegacyGlobal({source,target:store,identity,check});})().catch(error=>{globalPreparations.delete(store);throw error;});globalPreparations.set(store,pending);}await pending;}return wrapStore(store); }],
+    ['getStore', async (...args) => { check();const store=await runStorageOperation(()=>adapter.getStore(...args),{waitMs:10000,storageArtifact:'legacy_memory'});if(args[0]?.scope==='extension'){let pending=globalPreparations.get(store);if(!pending){pending=(async()=>{const source=await legacyGlobal();check();if(source)await prepareLegacyGlobal({source,target:store,identity,check});})().catch(error=>{globalPreparations.delete(store);throw error;});globalPreparations.set(store,pending);}await pending;}return wrapStore(store); }],
     ['openHandle', async (...args) => { check(); return wrapHandle(await adapter.openHandle(...args)); }],
     ['currentHandle', async (...args) => { check(); return wrapHandle(await adapter.currentHandle(...args)); }],
     ['setExtensionMetadata', (...args) => { check(); return adapter.setExtensionMetadata(identity.metadataNamespace(args[0]), ...args.slice(1)); }],
