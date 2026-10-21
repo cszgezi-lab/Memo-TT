@@ -1,4 +1,6 @@
 import { createMemoIdentity } from './memo-identity.js';
+import {prepareLegacyMemory as prepareMemoLegacyMemory,prepareLegacyGlobal,LEGACY_MEMORY_NAMESPACES,optionalLegacyRead} from './memo-legacy-memory.js';
+import {stableStringify} from './utils.js';
 
 const adapterCache = new WeakMap();
 const wrapperOwners = new WeakMap();
@@ -39,8 +41,9 @@ function facade(source, special) {
 }
 
 /** Isolates all public storage paths, including captured session.handle.store.
- * No construction read, source rewrite, automatic import or fallback to the old
- * owner's namespace occurs. The original adapter remains the authority for chat
+ * Construction does no I/O. An explicit captured-chat preparation may copy a
+ * verified old generation to Memo-owned storage. No ongoing old-store fallback
+ * or source rewrite occurs. The original adapter remains the authority for chat
  * identity, history, capability, cancellation and persistence errors. */
 export function createMemoHostAdapter(adapter, { edition, identity, disposeUnderlying = false, independentLifetime = false } = {}) {
   if (!object(adapter)) throw new TypeError('Memo requires a real host adapter');
@@ -65,25 +68,27 @@ export function createMemoHostAdapter(adapter, { edition, identity, disposeUnder
     return cached.wrapper;
   }
 
-  const stores = new WeakMap(), handles = new WeakMap(), metadata = new WeakMap();
+  const stores = new WeakMap(), handles = new WeakMap(), metadata = new WeakMap(),contexts=new WeakMap();
   const listeners = new Set(), promptKeys = new Map(), pendingPrompts = new Set();
   let disposed = false, disposal, status = 'active';
+  const globalPreparations=new WeakMap();
+  const legacyGlobal=async()=>typeof adapter.legacyGlobalStore==='function'?adapter.legacyGlobalStore():adapter.getStore?.({scope:'extension'});
   const check = () => { if (disposed) throw closed(); };
-  const address = args => {
+  const address = (args,context) => {
     if (!object(args) || Array.isArray(args)) throw new TypeError('Memo store address is required');
-    return { ...args, namespace: identity.namespace(args.namespace) };
+    return { ...args, namespace: context?.namespacePrefix&&LEGACY_MEMORY_NAMESPACES.includes(args.namespace)?context.namespacePrefix+args.namespace:identity.namespace(args.namespace) };
   };
 
-  function wrapStore(store) {
+  function wrapStore(store,context=null) {
     if (!object(store)) return store;
-    if (stores.has(store)) return stores.get(store);
+    let owners=stores.get(store);if(!owners){owners=new Map();stores.set(store,owners);}if(owners.has(context))return owners.get(context);
     const wrapped = {};
     // Optional host methods remain optional; do not invent a successful read
     // path or silently turn host errors into an empty/new workspace.
     for (const method of STORE_METHODS) if (typeof store[method] === 'function') {
-      wrapped[method] = (...args) => store[method].call(store, address(args[0]), ...args.slice(1));
+      wrapped[method] = (...args) => store[method].call(store, address(args[0],context), ...args.slice(1));
     }
-    Object.freeze(wrapped); stores.set(store, wrapped);
+    Object.freeze(wrapped); owners.set(context,wrapped);
     return wrapped;
   }
 
@@ -107,16 +112,26 @@ export function createMemoHostAdapter(adapter, { edition, identity, disposeUnder
   function wrapHandle(handle) {
     if (!object(handle)) return handle;
     if (handles.has(handle)) return handles.get(handle);
+    const context={handle,namespacePrefix:null};
     const wrapped = facade(handle, key => key === 'store'
-      ? { found: true, value: wrapStore(handle.store) }
+      ? { found: true, value: wrapStore(handle.store,context.namespacePrefix?context:null) }
       : key === 'metadata' ? { found: true, value: wrapMetadata(handle.metadata) } : { found: false });
-    handles.set(handle, wrapped);
+    handles.set(handle, wrapped);contexts.set(wrapped,context);
     return wrapped;
   }
 
   const overrides = new Map([
     ['memoIdentity', identity],
-    ['getStore', async (...args) => { check(); return wrapStore(await adapter.getStore(...args)); }],
+    ['prepareLegacyMemory', async session=>{
+      check();const context=contexts.get(session.handle);if(!context)throw new TypeError('Memo legacy import requires its captured handle');
+      const current=async()=>{check();if(stableStringify(await adapter.currentRef())!==session.refKey)throw Object.assign(new Error('聊天已切换，旧成果接续未激活'),{code:'CHAT_CHANGED'});};await current();
+      const completed=await prepareMemoLegacyMemory({source:null,target:context.handle.store,scope:session.scope,identity,check:current});if(completed.status==='imported'){context.namespacePrefix=completed.namespacePrefix;return {status:'imported',documents:completed.receipt.documents};}
+      const legacy=typeof adapter.legacyMemorySource==='function'?await adapter.legacyMemorySource(session):{store:context.handle.store,scope:session.scope};if(!legacy)return {status:'absent'};
+      if(stableStringify(legacy.scope)!==stableStringify(session.scope))throw Object.assign(new Error('旧成果身份与当前聊天不一致'),{code:'SCOPE_CONFLICT'});
+      const global=await legacyGlobal(),oldSettings=global?await optionalLegacyRead(global,{namespace:'shiyi-product-global',key:'settings-v1'}):null;
+      const result=await prepareMemoLegacyMemory({source:legacy.store,target:context.handle.store,scope:session.scope,identity,check:current,sourceSettings:legacy.settings??oldSettings?.value?.settings??{}});await current();context.namespacePrefix=result.namespacePrefix??null;return {status:result.status,documents:result.receipt?.documents??0};
+    }],
+    ['getStore', async (...args) => { check();const store=await adapter.getStore(...args);if(args[0]?.scope==='extension'){let pending=globalPreparations.get(store);if(!pending){pending=(async()=>{const source=await legacyGlobal();check();if(source)await prepareLegacyGlobal({source,target:store,identity,check});})().catch(error=>{globalPreparations.delete(store);throw error;});globalPreparations.set(store,pending);}await pending;}return wrapStore(store); }],
     ['openHandle', async (...args) => { check(); return wrapHandle(await adapter.openHandle(...args)); }],
     ['currentHandle', async (...args) => { check(); return wrapHandle(await adapter.currentHandle(...args)); }],
     ['setExtensionMetadata', (...args) => { check(); return adapter.setExtensionMetadata(identity.metadataNamespace(args[0]), ...args.slice(1)); }],
@@ -168,7 +183,7 @@ export function createMemoHostAdapter(adapter, { edition, identity, disposeUnder
   ]);
   // Preserve the host's capability surface; an absent optional operation must
   // not become a callable wrapper around undefined.
-  for (const key of [...overrides.keys()]) if (!['memoIdentity', 'dispose'].includes(key) && typeof adapter[key] !== 'function') overrides.delete(key);
+  for (const key of [...overrides.keys()]) if (!['memoIdentity', 'dispose','prepareLegacyMemory'].includes(key) && typeof adapter[key] !== 'function') overrides.delete(key);
   const wrapper = facade(adapter, key => overrides.has(key)
     ? { found: true, value: overrides.get(key) } : { found: false });
   if (!independentLifetime) byIdentity.set(identity.id, { wrapper, status: () => status, disposeUnderlying });

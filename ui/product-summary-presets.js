@@ -1,3 +1,4 @@
+import {defaultSummaryArmor} from '../src/summary-armor.js';
 import { defaultSummaryPreset, readSummaryPresets, validateSummaryPreset, summaryPresetPreview, SUMMARY_MODULE_NAMES } from '../src/summary-presets.js';
 import { clone } from '../src/utils.js';
 import { esc } from '../src/product-settings-ui.js';
@@ -39,11 +40,12 @@ export function summaryPresetsHTML(){return `<div data-preset-root><p data-prese
 export function mountSummaryPresets({panel,app,run,host,download}){
   const root=panel.querySelector?.('[data-preset-root]'),$=selector=>root?.querySelector?.(selector);
   if(!root)return {paint(){}};
-  let library=readSummaryPresets(),selected='default',raw=null,dirty=false,drafts=new Map();
+  let library=readSummaryPresets(),selected='default',raw=null,dirty=false,drafts=new Map(),armorEdited=new Set();
   const status=text=>{$('[data-preset-status]').textContent=text;};
-  function current(){
+  function current({includeArmor=false}={}){
     const preset=clone(drafts.get(selected)??library.items.find(p=>p.id===selected));
     preset.name=$('[data-preset-name]').value;preset.instructions=$('[data-preset-instructions]').value;
+    if(preset.armor||includeArmor||armorEdited.has(selected))preset.armor={...Object.fromEntries([...root.querySelectorAll('[data-preset-armor-toggle]')].map(n=>[n.dataset.presetArmorToggle,n.getAttribute('aria-pressed')==='true'])),words:$('[data-preset-armor-words]').value};
     for(const field of root.querySelectorAll('[data-preset-rule]'))preset.rules[field.dataset.presetRule]=field.value;
     return preset;
   }
@@ -51,7 +53,8 @@ export function mountSummaryPresets({panel,app,run,host,download}){
     const preset=drafts.get(selected)??library.items.find(p=>p.id===selected);
     $('[data-preset-select]').innerHTML=library.items.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}${p.id===library.activeId?' · 已启用':''}</option>`).join('');$('[data-preset-select]').value=selected;
     $('[data-preset-active]').textContent=`当前启用：${library.items.find(p=>p.id===library.activeId).name}`;
-    $('[data-preset-editor]').innerHTML=`<label class="memo-field" data-preset-rename hidden><span>新名称</span><input data-preset-name maxlength="80" value="${esc(preset.name)}"></label><div class="memo-preset-tabs"><button type="button" data-preset-tab="instructions" aria-expanded="false">总提示词</button>${groups.map(([key,title])=>`<button type="button" data-preset-tab="${key}" aria-expanded="false">${title}</button>`).join('')}</div><section data-preset-panel="instructions" hidden><textarea rows="9" aria-label="总提示词" data-preset-instructions maxlength="24000">${esc(preset.instructions)}</textarea></section>`+groups.map(([key,title,fields])=>`<section data-preset-panel="${key}" hidden>${[...fields,...(SUMMARY_MODULE_NAMES[key]?[`moduleNotes.${key}`]:[])].map(path=>`<label class="memo-field"><span>${esc(labels[path]??'本模块追加要求（可留空）')}</span><textarea rows="5" data-preset-rule="${path}" maxlength="16000">${esc(preset.rules[path])}</textarea></label>`).join('')}${examples[key]?`<button type="button" data-preset-example="${key}" aria-expanded="false">填写示例</button><pre class="memo-packet" data-preset-example-body="${key}" hidden>${esc(JSON.stringify(examples[key],null,2))}</pre>`:''}</section>`).join('');
+    const armor=preset.armor??defaultSummaryArmor({fillWords:true});
+    $('[data-preset-editor]').innerHTML=`<label class="memo-field" data-preset-rename hidden><span>新名称</span><input data-preset-name maxlength="80" value="${esc(preset.name)}"></label><div class="memo-preset-tabs"><button type="button" data-preset-tab="instructions" aria-expanded="false">总提示词</button><button type="button" data-preset-tab="armor" aria-expanded="false">破甲区</button>${groups.map(([key,title])=>`<button type="button" data-preset-tab="${key}" aria-expanded="false">${title}</button>`).join('')}</div><section data-preset-panel="instructions" hidden><textarea rows="9" aria-label="总提示词" data-preset-instructions maxlength="24000">${esc(preset.instructions)}</textarea></section>`+`<section class="memo-preset-armor" data-preset-panel="armor" hidden><div class="memo-actions">${[['antiTruncation','反截断'],['headerPadding','启用头部填充文本'],['userPadding','启用用户输入文本']].map(([key,label])=>`<button type="button" data-preset-armor-toggle="${key}" aria-pressed="${armor[key]}">${label}</button>`).join('')}</div><label class="memo-field"><span>破甲词</span><textarea rows="7" maxlength="16000" data-preset-armor-words>${esc(armor.words)}</textarea></label><p class="memo-help">总结与动态人设共用此处设置，均使用非流式。头部填充约14460字，用户填充7514字，均计入输入预算；开关与破甲词保存后生效。</p></section>`+groups.map(([key,title,fields])=>`<section data-preset-panel="${key}" hidden>${[...fields,...(SUMMARY_MODULE_NAMES[key]?[`moduleNotes.${key}`]:[])].map(path=>`<label class="memo-field"><span>${esc(labels[path]??'本模块追加要求（可留空）')}</span><textarea rows="5" data-preset-rule="${path}" maxlength="16000">${esc(preset.rules[path])}</textarea></label>`).join('')}${examples[key]?`<button type="button" data-preset-example="${key}" aria-expanded="false">填写示例</button><pre class="memo-packet" data-preset-example-body="${key}" hidden>${esc(JSON.stringify(examples[key],null,2))}</pre>`:''}</section>`).join('');
     $('[data-preset-action="rename"]').setAttribute('aria-expanded','false');
     for(const n of root.querySelectorAll('[data-preset-panel]'))n.hidden=true;
     for(const n of root.querySelectorAll('[data-preset-tab]'))n.setAttribute('aria-expanded','false');
@@ -61,9 +64,9 @@ export function mountSummaryPresets({panel,app,run,host,download}){
     const next=state.settings.summaryPresets??'';
     if(next===raw)return;
     if(dirty){status('检测到外部配置变化，编辑稿已保留；请先导出编辑稿或放弃修改后加载最新配置。');return;}
-    library=readSummaryPresets(next);raw=next;drafts.clear();if(!library.items.some(p=>p.id===selected))selected=library.activeId;draw();
+    library=readSummaryPresets(next);raw=next;drafts.clear();armorEdited.clear();if(!library.items.some(p=>p.id===selected))selected=library.activeId;draw();
   }
-  root.addEventListener('input',event=>{if(event.target.closest('[data-preset-editor]')){dirty=true;status('有未保存修改；尚未用于总结。');}});
+  root.addEventListener('input',event=>{if(event.target.closest('[data-preset-editor]')){if(event.target.matches('[data-preset-armor-words]'))armorEdited.add(selected);dirty=true;status('有未保存修改；尚未用于总结。');}});
   $('[data-preset-select]')?.addEventListener('change',()=>{drafts.set(selected,current());selected=$('[data-preset-select]').value;draw();});
   const freshId=()=>`preset-${globalThis.crypto.randomUUID()}`;
   async function persist(next){
@@ -71,19 +74,19 @@ export function mountSummaryPresets({panel,app,run,host,download}){
     const live=app.readViewState?.().settings??app.state.settings;
     if((live.summaryPresets??'')!==raw)throw new Error('预设已被其他设置操作修改；请先导出编辑稿，再放弃修改加载最新版本');
     const text=JSON.stringify(readSummaryPresets(JSON.stringify(next)));
-    await app.saveSettings({summaryPresets:text});library=next;raw=text;dirty=false;drafts.clear();draw();
+    await app.saveSettings({summaryPresets:text});library=next;raw=text;dirty=false;drafts.clear();armorEdited.clear();draw();
   }
   const actions={
     rename:()=>{const field=$('[data-preset-rename]');field.hidden=!field.hidden;$('[data-preset-action="rename"]').setAttribute('aria-expanded',String(!field.hidden));if(!field.hidden)$('[data-preset-name]').focus();},
     copy:()=>{const preset=current();validateSummaryPreset(preset);if(library.items.length>=12)throw new Error('最多保存 12 份预设');drafts.set(selected,preset);const copy={...preset,id:freshId(),name:`${preset.name.slice(0,70)} · 副本`};library.items.push(copy);selected=copy.id;dirty=true;draw();status('新副本尚未保存，修改后点“保存并启用”。');},
-    save:async()=>{const preset=validateSummaryPreset(current()),next=clone(library);drafts.set(selected,preset);next.items=next.items.map(p=>validateSummaryPreset(drafts.get(p.id)??p));next.activeId=selected;await persist(next);status('预设已全局保存并启用；下一次手动或自动总结生效。');},
-    reset:async()=>{if(!await host.confirm?.('把当前编辑稿恢复为推荐内容？保存后才生效，其他预设不变。'))return;const preset={...defaultSummaryPreset(),id:selected,name:current().name};drafts.set(selected,preset);dirty=true;draw();status('已填回推荐内容；保存并启用后生效。');},
+    save:async()=>{const preset=validateSummaryPreset(current({includeArmor:true})),next=clone(library);drafts.set(selected,preset);next.items=next.items.map(p=>validateSummaryPreset(drafts.get(p.id)??p));next.activeId=selected;await persist(next);armorEdited.clear();status('预设已全局保存并启用；下一次手动或自动总结生效。');},
+    reset:async()=>{if(!await host.confirm?.('把当前编辑稿恢复为推荐内容？保存后才生效，其他预设不变。'))return;const preset={...defaultSummaryPreset(),id:selected,name:current().name};drafts.set(selected,preset);armorEdited.delete(selected);dirty=true;draw();status('已填回推荐内容；保存并启用后生效。');},
     revert:async()=>{if(dirty&&!await host.confirm?.('放弃当前预设库中所有未保存修改？'))return;dirty=false;raw=null;paint(app.readViewState?.()??app.state);status('已重新加载保存的预设。');},
     delete:async()=>{if(library.items.length===1)throw new Error('至少保留一份预设');if(!await host.confirm?.('删除选中预设？不会删除记忆。请先保存其他编辑稿。'))return;const next=clone(library);next.items=next.items.filter(p=>p.id!==selected);if(next.activeId===selected)next.activeId=next.items[0].id;const previous=selected;selected=next.activeId;try{await persist(next);}catch(e){selected=previous;throw e;}status('预设已删除；其他已保存预设与记忆保留。');},
-    export:()=>download({version:1,activeId:selected,items:[validateSummaryPreset(current())]},'拾忆-总结预设.json'),
+    export:()=>download({version:1,activeId:selected,items:[validateSummaryPreset(current({includeArmor:true}))]},'拾忆-总结预设.json'),
     import:async()=>{const file=$('[data-preset-file]').files?.[0];if(!file)throw new Error('先选择预设 JSON');if(file.size>2400000)throw new Error('文件过大');const incoming=readSummaryPresets(await file.text());if(library.items.length+incoming.items.length>12)throw new Error('导入后超过 12 份，请先删除不用的预设');drafts.set(selected,current());const imported=incoming.items.map(p=>({...p,id:freshId()}));library.items.push(...imported);selected=imported[0].id;dirty=true;draw();status('已载入编辑稿，尚未启用；检查后点“保存并启用”。');},
-    preview:()=>{$('[data-preset-preview]').textContent=JSON.stringify(summaryPresetPreview(current()),null,2);},
+    preview:()=>{$('[data-preset-preview]').textContent=JSON.stringify(summaryPresetPreview(current({includeArmor:true})),null,2);},
   };
-  root.addEventListener('click',event=>{const tab=event.target.closest('[data-preset-tab]');if(tab){const target=$('[data-preset-panel="'+tab.dataset.presetTab+'"]'),opening=target.hidden;for(const n of root.querySelectorAll('[data-preset-panel]'))n.hidden=true;for(const n of root.querySelectorAll('[data-preset-tab]'))n.setAttribute('aria-expanded','false');target.hidden=!opening;tab.setAttribute('aria-expanded',String(opening));return;}const example=event.target.closest('[data-preset-example]');if(example){const target=$('[data-preset-example-body="'+example.dataset.presetExample+'"]');target.hidden=!target.hidden;example.setAttribute('aria-expanded',String(!target.hidden));return;}const button=event.target.closest('[data-preset-action]');if(button){const action=actions[button.dataset.presetAction];if(action)void run(async()=>{button.disabled=true;try{await action();}finally{button.disabled=false;}},{name:'summary-preset'});}});
+  root.addEventListener('click',event=>{const armor=event.target.closest('[data-preset-armor-toggle]');if(armor){armorEdited.add(selected);armor.setAttribute('aria-pressed',String(armor.getAttribute('aria-pressed')!=='true'));dirty=true;status('有未保存修改；尚未用于总结。');return;}const tab=event.target.closest('[data-preset-tab]');if(tab){const target=$('[data-preset-panel="'+tab.dataset.presetTab+'"]'),opening=target.hidden;for(const n of root.querySelectorAll('[data-preset-panel]'))n.hidden=true;for(const n of root.querySelectorAll('[data-preset-tab]'))n.setAttribute('aria-expanded','false');target.hidden=!opening;tab.setAttribute('aria-expanded',String(opening));return;}const example=event.target.closest('[data-preset-example]');if(example){const target=$('[data-preset-example-body="'+example.dataset.presetExample+'"]');target.hidden=!target.hidden;example.setAttribute('aria-expanded',String(!target.hidden));return;}const button=event.target.closest('[data-preset-action]');if(button){const action=actions[button.dataset.presetAction];if(action)void run(async()=>{button.disabled=true;try{await action();}finally{button.disabled=false;}},{name:'summary-preset'});}});
   return {paint};
 }

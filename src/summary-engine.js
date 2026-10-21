@@ -1,3 +1,4 @@
+import {applySummaryArmor,normalizeSummaryArmor,summaryToolContent} from './summary-armor.js';
 import {
   DRAFT_CATEGORIES,
   SUMMARY_OUTPUT_CONTRACT,
@@ -65,7 +66,7 @@ function stripJsonFence(text) {
   return fenced ? fenced[1].trim() : value;
 }
 
-async function parseModelResponse(raw, { onMetadata = () => {}, onNormalize = () => {}, allowArray = false } = {}) {
+async function parseModelResponse(raw, { onMetadata = () => {}, onNormalize = () => {}, allowArray = false, allowToolTransport = false } = {}) {
   const parseJson=text=>{const parsed=parseSummaryJson(text);if(parsed.duplicateEmptyModules){try{onNormalize({duplicateEmptyModules:parsed.duplicateEmptyModules});}catch{/* diagnostics do not decide validity */}}return parsed.value;};
   const status = responseStatus(raw);
   if (status < 200 || status >= 300) {
@@ -80,7 +81,7 @@ async function parseModelResponse(raw, { onMetadata = () => {}, onNormalize = ()
   // OpenAI-compatible chat response. A length stop is a truncated model
   // result even when the provider happened to return syntactically valid JSON.
   const finishReason = payload?.choices?.[0]?.finish_reason ?? payload?.choices?.[0]?.finishReason ?? payload?.finish_reason ?? payload?.finishReason;
-  const content=payload?.choices?.[0]?.message?.content??payload?.output_text;
+  let content=payload?.choices?.[0]?.message?.content??payload?.output_text;
   const metadata=safeLogDetails({status,finishReason:finishReason??'unknown',truncated:['length','max_tokens','truncated','abort'].includes(String(finishReason).toLowerCase()),promptTokens:payload?.usage?.prompt_tokens,completionTokens:payload?.usage?.completion_tokens,totalTokens:payload?.usage?.total_tokens,reasoningTokens:payload?.usage?.completion_tokens_details?.reasoning_tokens,responseChars:typeof content==='string'?content.length:undefined});
   try{onMetadata(metadata);}catch{/* diagnostics are not part of model validation */}
   if (['length', 'max_tokens', 'truncated', 'abort'].includes(String(finishReason).toLowerCase())) {
@@ -90,6 +91,8 @@ async function parseModelResponse(raw, { onMetadata = () => {}, onNormalize = ()
   if(typeof payload?.choices?.[0]?.message?.refusal==='string'&&payload.choices[0].message.refusal.trim()){
     const error=new SummaryResponseError('summary model refused the request',{...metadata,reason:'output_blocked',stage:'parse_content'});error.code='MODEL_OUTPUT_BLOCKED';throw error;
   }
+  const toolContent=summaryToolContent(payload,{enabled:allowToolTransport});
+  if(toolContent!==null){content=toolContent;payload={...payload,choices:[{...payload.choices[0],message:{...payload.choices[0].message,content:toolContent}}]};}
   if(payload?.choices&&typeof content!=='string')throw new SummaryResponseError('summary response has no textual content',{...metadata,reason:'empty_model_content',stage:'parse_content',contentType:contentType(content),choicesCount:payload.choices.length});
   if (payload?.choices?.[0]?.message?.content !== undefined) payload = payload.choices[0].message.content;
   else if (payload?.output_text !== undefined) payload = payload.output_text;
@@ -156,7 +159,7 @@ function modelEnvelope(request) {
 
 const FORMAT_RECOVERY_RULE='上次完整返回的正文未形成有效的总结 JSON。请依据同一完整原文和本次 outputContract 重新输出单个完整 JSON，不加解释或 Markdown，不省略必需区块和逐楼摘要，不猜测事实或来源。';
 
-function modelInvoker(model) {
+function modelInvoker(model,{armor=null,preferBuffered=false}={}) {
   if (typeof model === 'function') return model;
   if (typeof model?.summarize === 'function') return model.summarize.bind(model);
   if (typeof model?.generate === 'function') return model.generate.bind(model);
@@ -167,9 +170,9 @@ function modelInvoker(model) {
     // second, independently estimated request.
     invoke.providerPayload = (request) => {
       const envelope=modelEnvelope(request);
-      const payload={
+      let payload={
       model: model.profile?.model,
-      ...summaryTransportOptions(model.profile),
+      ...(preferBuffered?{stream:false}:summaryTransportOptions(model.profile)),
       ...(Number.isSafeInteger(request?.effectiveMaxTokens) && request.effectiveMaxTokens > 0
         ? { max_tokens: request.effectiveMaxTokens }
         : model.profile?.maxTokens > 0 ? { max_tokens: model.profile.maxTokens } : {}),
@@ -178,6 +181,7 @@ function modelInvoker(model) {
         { role: 'user', content: JSON.stringify(envelope) },
       ],
       };
+      payload=applySummaryArmor(payload,armor);
       const readings=[...(envelope.sourceMessages??[]),...(envelope.bridgeMessages??[])].map(m=>m._reading).filter(Boolean);
       Object.defineProperty(payload,'_outputContract',{value:envelope.extractionContext?.outputContract});
       if(readings.length)Object.defineProperty(payload,'_readingReport',{value:narrativeCounters(readings)});
@@ -382,9 +386,10 @@ function compactRecoveryContext(request, targetUnits, providerPayload) {
 
 /** P1 one-request-per-segment orchestration with atomic bundle commits. */
 export class SummaryEngine {
-  constructor({ model, supplementModel=null, staged=false, verified=false, isolateIds=false, packRequests=false, repository, maxInputUnits = 12000, maxSourceUnits = null, requestSafetyUnits = null, outputReserveUnits = null, maxRelevantRecords = 64, requireFloorSummaries = false, stageCrossBatchMerges = false, recoveryEnabled=false, now = () => Date.now() } = {}) {
-    this.model = modelInvoker(model);
-    this.supplementModel = supplementModel ? modelInvoker(supplementModel) : this.model;
+  constructor({ model, supplementModel=null, staged=false, verified=false, isolateIds=false, packRequests=false, repository, maxInputUnits = 12000, maxSourceUnits = null, requestSafetyUnits = null, outputReserveUnits = null, maxRelevantRecords = 64, requireFloorSummaries = false, stageCrossBatchMerges = false, recoveryEnabled=false, summaryArmor=null, preferBuffered=false, now = () => Date.now() } = {}) {
+    this.summaryArmor=normalizeSummaryArmor(summaryArmor);
+    this.model = modelInvoker(model,{armor:this.summaryArmor,preferBuffered});
+    this.supplementModel = supplementModel ? modelInvoker(supplementModel,{armor:this.summaryArmor,preferBuffered}) : this.model;
     this.verified = verified;
     this.staged = staged && !verified;
     this.packRequests = packRequests;
@@ -723,7 +728,7 @@ export class SummaryEngine {
         if(units>requestLimit)throw new ShiyiError('本次模型输入超过设置的输入预算；已返回结果保留，尚未发送该请求','INPUT_BUDGET_EXCEEDED',{...baseDetails,reason:'input_budget_exceeded',stage:'prepare',inputLimit:requestLimit,inputUnits:units});
         const wireContract=providerPayload?._outputContract??request.extractionContext?.outputContract;
         if(providerPayload?._readingReport)emit('reading',providerPayload._readingReport,providerPayload._readingReport.readingFallbacks?'warning':'info');
-        emit('request',{...baseDetails,summaryStage:request.summaryStage,modelRole:request.summaryRole??'summary',sourceInputUnits:estimateUnits(JSON.stringify(request.sourceMessages??[])),historyInputUnits:estimateUnits(JSON.stringify(request.relevantRecords??{})),schemaInputUnits:estimateUnits(JSON.stringify(wireContract??request.outputContract??{})),bridgeInputUnits:estimateUnits(JSON.stringify(request.bridgeMessages??[])),inputUnits:units,maxTokens:providerPayload?.max_tokens??0,recoveryCalls});
+        emit('request',{...baseDetails,summaryStage:request.summaryStage,modelRole:request.summaryRole??'summary',streaming:providerPayload?.stream===true,sourceInputUnits:estimateUnits(JSON.stringify(request.sourceMessages??[])),historyInputUnits:estimateUnits(JSON.stringify(request.relevantRecords??{})),schemaInputUnits:estimateUnits(JSON.stringify(wireContract??request.outputContract??{})),bridgeInputUnits:estimateUnits(JSON.stringify(request.bridgeMessages??[])),inputUnits:units,maxTokens:providerPayload?.max_tokens??0,recoveryCalls});
         const started=this.now();state.requests++;childCalls++;
         try{
           try{return await model(request,{signal,requestId:baseDetails.requestId,purpose,bypassForeground:true});}
@@ -818,7 +823,7 @@ export class SummaryEngine {
           // child is allowed on this user-triggered run. Valid paid responses
           // still resume locally after persistence/commit failures.
           try{
-            const cached=unwrapModuleSummaryResponse(await parseModelResponse(prior.raw));
+            const cached=unwrapModuleSummaryResponse(await parseModelResponse(prior.raw,{allowToolTransport:this.summaryArmor.antiTruncation}));
             const allowed=new Set([...child.sourceMessages,...child.bridgeMessages].map(m=>m.id));
             cachedForeignSource=DRAFT_CATEGORIES.some(k=>Array.isArray(cached?.[k])&&cached[k].some(row=>{
               if(typeof row?.sourceId==='string'&&!allowed.has(row.sourceId))return true;
@@ -845,7 +850,7 @@ export class SummaryEngine {
               const coverage=coverageState(bound.coverage,sourceRefsFor(child));
               if(!coverage.complete){const error=new ValidationError('阶段未完整处理所选楼层',{coverage});error.code='COVERAGE_INCOMPLETE';throw error;}
             };
-            raw=await runSummaryStages({request,cached:prior?.stages,invoke:(r,options)=>{phase='request';if(!options?.extra)recoveryCalls=0;return invoke(r,baseDetails,options);},parse:(r,stage)=>{phase='response';return parseModelResponse(r,{onMetadata:metadata=>emit('response',{...baseDetails,...metadata,summaryStage:stage})});},validateNarrative:checkCoverage,validateDetails:checkCoverage,
+            raw=await runSummaryStages({request,cached:prior?.stages,invoke:(r,options)=>{phase='request';if(!options?.extra)recoveryCalls=0;return invoke(r,baseDetails,options);},parse:(r,stage)=>{phase='response';return parseModelResponse(r,{allowToolTransport:this.summaryArmor.antiTruncation,onMetadata:metadata=>emit('response',{...baseDetails,...metadata,summaryStage:stage})});},validateNarrative:checkCoverage,validateDetails:checkCoverage,
               save:async stages=>{
                 const patch={binding:resultBinding,stages,retryModel:true};
                 this.repository.retainPrivateResponse?.(child.scope,child.operationId,patch);
@@ -860,7 +865,7 @@ export class SummaryEngine {
         }
         throwIfAborted(signal);
         phase='response';
-        const parseResponse=answer=>parseModelResponse(answer,{onMetadata:metadata=>emit('response',{...baseDetails,...metadata,elapsedMs:this.now()-started}),onNormalize:details=>emit('normalize',{...baseDetails,...details},details.duplicateEmptyModules?'warning':'success')});
+        const parseResponse=answer=>parseModelResponse(answer,{allowToolTransport:this.summaryArmor.antiTruncation,onMetadata:metadata=>emit('response',{...baseDetails,...metadata,elapsedMs:this.now()-started}),onNormalize:details=>emit('normalize',{...baseDetails,...details},details.duplicateEmptyModules?'warning':'success')});
         let parsed;
         try{parsed=await parseResponse(raw);}
         catch(error){
@@ -928,7 +933,7 @@ export class SummaryEngine {
             const review=verificationRequest(reviewRequest,output,{validationIssues,pending:progress?.pending??[]});
             if(projectReview)review.instructions+='\n'+NARRATIVE_READING_RULE;
             const apply=async response=>{
-              const changes=await parseModelResponse(response,{onMetadata:metadata=>emit('response',{...baseDetails,...metadata,purpose:'summary_verification'})});
+              const changes=await parseModelResponse(response,{allowToolTransport:this.summaryArmor.antiTruncation,onMetadata:metadata=>emit('response',{...baseDetails,...metadata,purpose:'summary_verification'})});
               const result=applyVerificationProgress(output,changes,review);
               const value=normalizeDraftMetadata(result.output,'summary_verification');
               return {changes,value,pending:result.pending,accepted:result.accepted,noteCoverage:result.noteCoverage};
@@ -1006,7 +1011,7 @@ export class SummaryEngine {
             emit('partial_repair',{...baseDetails,...safeLogDetails(error.details),purpose:'floor_repair',repairFields:missing.length},'warning');
             let fixed;
             const repairRaw=await invoke(missingFloorRequest(request,bundle,missing),baseDetails,{extra:true});
-            try{fixed=await parseModelResponse(repairRaw,{onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata})});}
+            try{fixed=await parseModelResponse(repairRaw,{allowToolTransport:this.summaryArmor.antiTruncation,onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata})});}
             catch(repairError){
               if(signal?.aborted)throw repairError;
               emit('repair_failed',{...baseDetails,...errorDiagnostics(repairError)},'error');
@@ -1067,7 +1072,7 @@ export class SummaryEngine {
           const repairRequest=referenceRepairRequest(request,bundle,validation);
           if(repairRequest){
             emit('partial_repair',{...baseDetails,purpose:'reference_repair',...safeLogDetails(validation)},'warning');
-            const fixed=await parseModelResponse(await invoke(repairRequest,baseDetails,{extra:true}),{onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata})});
+            const fixed=await parseModelResponse(await invoke(repairRequest,baseDetails,{extra:true}),{allowToolTransport:this.summaryArmor.antiTruncation,onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata})});
             const repaired=applyReferenceRepair(bundle,repairRequest,fixed);
             if(repaired){const checked=validateDraftBundle(repaired,validationOptions);if(checked.valid){bundle=repaired;validation=checked;await keepResponse(bundle);emit('repair_complete',{...baseDetails,purpose:'reference_repair'},'success');}}
           }
@@ -1089,7 +1094,7 @@ export class SummaryEngine {
             const repairRaw=await invoke(repairRequest,baseDetails,{extra:this.recoveryEnabled});
             throwIfAborted(signal);
             phase='repair_response';
-            const correction=await parseModelResponse(repairRaw,{onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata,elapsedMs:this.now()-repairStarted})});
+            const correction=await parseModelResponse(repairRaw,{allowToolTransport:this.summaryArmor.antiTruncation,onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata,elapsedMs:this.now()-repairStarted})});
             const corrected=applyEnumCorrections(bundle,repairTargets,correction,{onRejected:repairRejection=>emit('repair_failed',{...baseDetails,repairRejection},'warning')});
             if(corrected){
               const checked=validateDraftBundle(corrected,validationOptions);
@@ -1110,7 +1115,7 @@ export class SummaryEngine {
             try{
               const repairRaw=await invoke(categoryRepairRequest(request,bundle,categories,validation),baseDetails,{extra:true});
               phase='repair_response';
-              const fixed=await parseModelResponse(repairRaw,{allowArray:categories.length===1,onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata})});
+              const fixed=await parseModelResponse(repairRaw,{allowToolTransport:this.summaryArmor.antiTruncation,allowArray:categories.length===1,onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata})});
               // A number of OpenAI-compatible providers ignore the requested
               // object shape for a one-category repair and return the array
               // itself. It is unambiguous in this branch, so wrap it before

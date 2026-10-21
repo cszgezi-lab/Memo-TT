@@ -61,7 +61,7 @@ const DEFINITIONS = [
   { key: 'deadlineMs', label: '请求截止时间', defaultValue: 120000, type: 'integer', min: 100, max: 600000, consumers: ['ProductShellController.transport', 'ProviderClient'] },
   { key: 'summaryDeadlineMs', label: '后台总结与复核超时', defaultValue: 300000, type: 'integer', min: 1000, max: 600000, consumers: ['ProductShellController.transport', 'ProductApplication.summary', 'ProductApplication.supplement'] },
   { key:'summaryStreaming', label:'总结流式接收', defaultValue:false, type:'boolean', consumers:['SummaryEngine','ProviderClient'] },
-  { key:'summaryRequestMode', label:'总结请求方式', defaultValue:'chat-stream', type:'enum', values:['chat-stream','chat-buffered','legacy-json'], consumers:['SummaryEngine','ProviderClient'] },
+  { key:'summaryRequestMode', label:'总结请求方式', defaultValue:'chat-buffered', type:'enum', values:['chat-stream','chat-buffered','legacy-json'], consumers:['SummaryEngine','ProviderClient'] },
   { key:'chatRequestsPerMinute', label:'同一接口每分钟聊天请求上限', defaultValue:0, type:'integer', min:0, max:6000, consumers:['ProviderScheduler'] },
   { key: 'focusMode', label: '侧重点确认方式', defaultValue: 'ask_manual', type: 'enum', values: ['inherit', 'ask_manual', 'ask_every'], consumers: ['ProductShellController.startSummary', 'SummaryEngine'] },
 

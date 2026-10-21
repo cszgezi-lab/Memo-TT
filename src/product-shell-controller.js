@@ -1,3 +1,4 @@
+import {summaryPresetFromRules} from './summary-presets.js';
 import { normalizeInnerLife } from './character-journal.js';
 import {
   createSummaryBatch,
@@ -402,6 +403,8 @@ export function createProductShellController({
       try {
         const session = await captureProductHostSession(adapterInstance, { accountId: options.accountId ?? accountId, branchId: options.branchId ?? branchId });
         if(!matchesExpected(session.ref))throw Object.assign(new Error('聊天已切换'),{code:'CHAT_CHANGED'});
+        await adapterInstance.prepareLegacyMemory?.(session);
+        if(!matchesExpected(session.ref))throw Object.assign(new Error('聊天已切换'),{code:'CHAT_CHANGED'});
         state.session = session;
         state.scope = clone(session.scope);
         state.capabilities.identity = 'ready';
@@ -617,7 +620,7 @@ export function createProductShellController({
     summaryRepository.commitBundle=async (...args)=>{validateBundle(args[0]);return repository.commitBundle(...args);};
     summaryRepository.listRecords=async scope=>(await repository.readScope(scope,{includeOperations:[operationId],excludeOperations,includeHistory:false})).records;
     try {
-      engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, supplementModel:supplementModelFactory?.()??null, staged:state.settings.summaryStaged, verified:state.settings.summaryReviewEnabled, isolateIds:true, packRequests:state.job.requestPlanning==='wire-v1', maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: state.job.splitUnits, requireFloorSummaries, stageCrossBatchMerges:true, recoveryEnabled:true, outputReserveUnits: 0, now });
+      engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, preferBuffered:true, summaryArmor:summaryPresetFromRules(batch.rules)?.armor, supplementModel:supplementModelFactory?.()??null, staged:state.settings.summaryStaged, verified:state.settings.summaryReviewEnabled, isolateIds:true, packRequests:state.job.requestPlanning==='wire-v1', maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: state.job.splitUnits, requireFloorSummaries, stageCrossBatchMerges:true, recoveryEnabled:true, outputReserveUnits: 0, now });
       const result = await engine.process(batch, { signal: preflightAbort.signal, onDiagnostic, onSourcePlan:plan=>{
         if(!tokenValid(token,session)||preflightAbort.signal.aborted||activeTask!==operationId||abortController!==preflightAbort)throw Object.assign(new Error('任务已停止'),{code:'CANCELED'});
         if(plan.operationId!==operationId||plan.sourceRevision!==batch.sourceRevision||stableStringify(plan.scope)!==stableStringify(session.scope))throw Object.assign(new Error('总结来源计划不一致'),{code:'SOURCE_INVALIDATED'});

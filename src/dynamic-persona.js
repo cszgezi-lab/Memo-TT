@@ -1,4 +1,5 @@
 import {clone,sha256,stableStringify,estimateUnits,makeId} from './utils.js';
+import {activePersonaArmor,preparePersonaTransport,personaTransportUnits,decodePersonaTransport,assertPersonaWire} from './persona-armor.js';
 import {autoSummaryPlan} from './product-auto-summary.js';
 import {failureText} from './product-feedback.js';
 import {safeLogDetails} from './product-runtime-log.js';
@@ -957,13 +958,14 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       let requestViewVersion=freshRequestViewVersion;
       const legacyWorld={...world,entries:world.entries?.filter(s=>s.sourceKind!=='character_card'),spans:world.spans?.filter(s=>s.sourceKind!=='character_card')};
       const buildPersonaRequest=(economy,messages=range.messages,priorDossier=previous,viewVersion=requestViewVersion,prepared=true)=>{const raw=personaRequestBase({messages,world:viewVersion===1?legacyWorld:world,previous:priorDossier,prompt:config.dynamicPersonaPrompt,dictionary:dictionary(),aliases:config.aliases,stageMode:config.dynamicPersonaMvuMode,records:records(),readingConfig:config.narrativeExtraction,...replayContext,...(economy?{arcReferenceVariant:'off',materialsThrough:-1}:{}),requestViewVersion:viewVersion});return prepared&&viewVersion>=12?prepareCorrespondingRequest(raw,{taskPrompt:customPersonaTask(config.dynamicPersonaPrompt)}):raw;};
-      let request=buildPersonaRequest(false),inputUnits=estimateUnits(JSON.stringify(request.messages));
+      const measureTransport=request=>personaTransportUnits(preparePersonaTransport(request,config));
+      let request=buildPersonaRequest(false),inputUnits=measureTransport(request);
       // The input limit guards model attention, not a hard wall. Before failing
       // a paid batch, drop the optional attention aids (memory material rows
       // and arc references). Source, worldbook, the previous dossier and the
       // floor range are never truncated; only a still-oversized request fails.
       let economy=false;
-      if(inputUnits>config.dynamicPersonaInputUnits){economy=true;request=buildPersonaRequest(true);inputUnits=estimateUnits(JSON.stringify(request.messages));}
+      if(inputUnits>config.dynamicPersonaInputUnits){economy=true;request=buildPersonaRequest(true);inputUnits=measureTransport(request);}
       const requestFingerprint=q=>sha256({recovery:PERSONA_RECOVERY_VERSION,sourceHash,request:q.messages,model:config.dynamicPersonaModel,endpoint:config.dynamicPersonaEndpoint,output:config.dynamicPersonaOutputTokens,previous});
       const cacheKey=manualId?`persona-result-${manualId}-${key}`:`persona-result-${key}`;
       personaStep='cached_response';const cached=await bound.read(cacheKey,null);guard();
@@ -1000,7 +1002,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       };
       const referenceProtocol={version:2,seal:request=>sealReferenceProtocol(request,{enabled:true}),parseBoundReply:parseBoundPersona,replayStoredPacket:(packet,context)=>parseBoundPersona({choices:[{finish_reason:'stop',message:{content:JSON.stringify(packet.encodedModelBody)}}]},context,sealReferenceProtocol(context.request,{enabled:true})),inspectCurrentClaims};
       const entryReview={...personaEntryReview,decorate:(request,manifest)=>prepareCorrespondingRequest(request,{inputLimit:config.dynamicPersonaInputUnits,frozenManifest:manifest,taskPrompt:customPersonaTask(config.dynamicPersonaPrompt)}),referenceProtocol};
-      const rows=await recoverPersonaBatch({messages:range.messages,previous,fingerprint,cached,inputLimit:config.dynamicPersonaInputUnits,guard:recoveryGuard,entryReview,expectedRequestViewVersion:requestViewVersion,expectedReferenceProtocolVersion:requestViewVersion>=12?2:undefined,
+      const rows=await recoverPersonaBatch({messages:range.messages,previous,fingerprint,cached,inputLimit:config.dynamicPersonaInputUnits,guard:recoveryGuard,entryReview,expectedRequestViewVersion:requestViewVersion,expectedReferenceProtocolVersion:requestViewVersion>=12?2:undefined,prepareWireRequest:(request,options)=>preparePersonaTransport(request,config,options),measureWireRequest:personaTransportUnits,
         rebuildAuditRequest:({messages,previous,requestViewVersion})=>buildScopeRawRequest(messages,previous,requestViewVersion),
         makeRequest:(messages,previous)=>{
           // Only the already-saved original reply uses its old wire/guards.
@@ -1009,14 +1011,14 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
           const viewVersion=replayOriginalReply?requestViewVersion:freshRequestViewVersion;replayOriginalReply=false;
           return buildScopeRawRequest(messages,previous,viewVersion);
         },
-        send:async messages=>{personaStep='model_request';modelRequested=true;const wire={model:config.dynamicPersonaModel,messages,stream:true,...(config.dynamicPersonaJsonMode?{response_format:{type:'json_object'}}:{}),...(config.dynamicPersonaOutputTokens>0?{max_tokens:config.dynamicPersonaOutputTokens}:{})};
+        send:async (messages,{payload,compatibility}={})=>{personaStep='model_request';modelRequested=true;const wire=payload;assertPersonaWire(messages,wire);
          // Corrections may still carry the whole selected source range and can
          // wait for provider quota. Use the configured transport deadline for
          // both initial and repair calls; the batch signal handles cancellation.
          const chatOptions={signal:controller.signal};
-         let reply=await client().chatCompletions(wire,chatOptions);
+         let reply=decodePersonaTransport(await client().chatCompletions(wire,chatOptions),compatibility);
          // 某些网关对 response_format 返回空正文（计费但无内容）。自动去掉 JSON 模式重发一次。
-         if(config.dynamicPersonaJsonMode&&!['length','max_tokens','content_filter'].includes(reply?.choices?.[0]?.finish_reason)&&!structuredPersonaRefusal(reply)&&!String(reply?.choices?.[0]?.message?.content??'').trim()){diagnostic({run,task:'persona',phase:'response',level:'warning',details:{reason:'persona_json_mode_empty_fallback',modelRole:'dynamicPersona'}});const plain={...wire};delete plain.response_format;reply=await client().chatCompletions(plain,chatOptions);}
+         if(wire.response_format&&!['length','max_tokens','content_filter'].includes(reply?.choices?.[0]?.finish_reason)&&!structuredPersonaRefusal(reply)&&!String(reply?.choices?.[0]?.message?.content??'').trim()){diagnostic({run,task:'persona',phase:'response',level:'warning',details:{reason:'persona_json_mode_empty_fallback',modelRole:'dynamicPersona'}});const plain={...wire};delete plain.response_format;reply=decodePersonaTransport(await client().chatCompletions(plain,chatOptions),compatibility);}
          return reply;
         },
         parse:parseNativePersona,
@@ -1032,7 +1034,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
         rewrittenSourceSentences:rows.reduce((n,p)=>n+(p.composition?.changes?.length??0),0),
         retainedSourceSentences:rows.reduce((n,p)=>n+(p.composition?.parts?.length??0),0)}});
       guard();
-      if(Object.keys(config).filter(k=>k.startsWith('dynamicPersona')||k==='aliases').some(k=>stableStringify(settings()[k])!==stableStringify(config[k])))throw Object.assign(new Error('人设运行期间设置已变化；结果未覆盖旧档案'),{code:'CANCELED'});
+      if(Object.keys(config).filter(k=>k.startsWith('dynamicPersona')||k==='aliases').some(k=>stableStringify(settings()[k])!==stableStringify(config[k]))||stableStringify(activePersonaArmor(settings()))!==stableStringify(activePersonaArmor(config)))throw Object.assign(new Error('人设运行期间设置已变化；结果未覆盖旧档案'),{code:'CANCELED'});
       personaStep='source_verify';showStep('正在核对来源并保存');const checkRange=await readRange({startIndex:next.nextStart,endIndex:next.nextEnd});guard();if(sourceHash!==sha256(checkRange.messages))throw Object.assign(new Error('人设来源正文已变化'),{code:'SOURCE_INVALIDATED'});
       personaStep='worldbook_verify';const latestWorld=await worldbook.read();guard();if(rows.some(p=>p.bindings.some(b=>!latestWorld.spans.some(s=>s.id===b.id&&s.stage===b.stage||config.dynamicPersonaMvuMode!=='strict'&&s.book===b.book&&s.uid===b.uid&&s.hash===b.hash))))throw Object.assign(new Error('人设阶段或原设定已变化；等待当前阶段重试'),{code:'PERSONA_STAGE_CHANGED',details:{stage:'validate',reason:'persona_stage_changed'}});
       personaStep='profile_save';
@@ -1344,8 +1346,10 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     if(!profile)throw new Error('人物档案不存在');
     const request=personaDirectiveRequest(withDirectives(profile),instruction);
     const config=settings();
-    const reply=await client().chatCompletions({model:config.dynamicPersonaModel,messages:request.messages,stream:true,...(config.dynamicPersonaOutputTokens>0?{max_tokens:config.dynamicPersonaOutputTokens}:{})});check(bound);
-    return {directives:parsePersonaDirectiveResponse(reply)};
+    const wire=preparePersonaTransport(request,config);
+    if(personaTransportUnits(wire)>config.dynamicPersonaInputUnits)throw new Error('人设请求超过输入预算，请减少填充或提高预算');
+    const reply=await client().chatCompletions(wire.transportPayload);check(bound);
+    return {directives:parsePersonaDirectiveResponse(decodePersonaTransport(reply,wire.wireCompatibility))};
   }
   async function add(name,text){check();const bound=currentWorkspace,nameOnly=text===undefined;name=String(name??'').trim();text=String(text??'').trim();if(!name||(!text&&!nameOnly)||unsafe.test(text))throw new Error('请填写姓名和完整人物信息，不要包含脚本');personaAliases([name]);const identity=personaIdentity({previous:data.profiles,dictionary:dictionary(),aliases:settings().aliases});if(identity.resolve(name)?.profiles.length)throw new Error('已有这个人物的档案，请直接修改（简繁和已确认别称视为同一人）');const id=sha256([foldName(name),'supplement']).slice(0,24);const through=await historyTail();check(bound);lastIndex=through;await transact(()=>save({...data,profiles:[...data.profiles.filter(p=>p.id!==id),{id,name,characterId:sha256(['persona-character',foldName(name)]).slice(0,24),aliases:[],text,bindings:[],stage:'supplement',sourceFloors:[],through,manual:true,locked:true}]},bound));await mirrorAfterEdit();}
   function profiles(){const rows=ready&&settings().dynamicPersonaEnabled&&currentWorkspace?.isCurrent()?data.profiles.filter(p=>!p.deleted&&(!p.composition?.pendingOnly||p.manual||p.locked)&&(lastIndex===null||p.through<=lastIndex)):[];return currentPersonaProfiles(rows,settings().dynamicPersonaMvuMode).map(p=>projectCurrentPersona(withDirectives(p),personaTimelineFrame(records())));}

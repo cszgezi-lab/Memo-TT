@@ -2,6 +2,7 @@ import { API_KINDS } from './product-model-list.js';
 import { isMissingProductEntry } from './product-host-adapters.js';
 import { stableStringify } from './utils.js';
 import {verifiedWrite} from './reliable-storage.js';
+import {memoStorageLock} from './memo-storage-lock.js';
 
 export const credentialAddress = kind => {
   if (!API_KINDS.includes(kind)) throw new Error('未知模型用途');
@@ -32,7 +33,7 @@ export function createCredentialStore({getStore}) {
     if(value&&!credentialOrigin(origin))throw new Error('请先填写有效 API 地址，再保存 Key');
     const document={version:1,value,origin:value?credentialOrigin(origin):''};
     const task=(pending.get(kind)??Promise.resolve()).catch(()=>{}).then(async()=>{
-      try {const s=await ready();await verifiedWrite(s,credentialAddress(kind),document);const check=await read(kind);if(stableStringify(check)!==stableStringify({value:document.value,origin:document.origin}))throw new Error('mismatch');}
+      try {const s=await ready();await memoStorageLock(s,'memo-settings-v1',async()=>{await verifiedWrite(s,credentialAddress(kind),document);const check=await read(kind);if(stableStringify(check)!==stableStringify({value:document.value,origin:document.origin}))throw new Error('mismatch');});}
       catch{throw new Error('本机 Key 保存或读回失败，不能确认已保存；当前输入仍保留，请重试');}
       return {value:document.value,origin:document.origin};
     });pending.set(kind,task);return task.finally(()=>{if(pending.get(kind)===task)pending.delete(kind);});

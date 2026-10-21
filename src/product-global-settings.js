@@ -2,6 +2,7 @@ import { persistedProductSettings, validateProductEdit, validateStoredProductPat
 import { API_SETTINGS_ADDRESS } from './product-api-settings.js';
 import { clone, stableStringify } from './utils.js';
 import {losslessStore,verifiedWrite} from './reliable-storage.js';
+import {memoStorageLock} from './memo-storage-lock.js';
 
 export const GLOBAL_SETTINGS_ADDRESS = Object.freeze({namespace:'shiyi-product-global',key:'settings-v1'});
 export const DEFAULTS_MIGRATION_ID = '0.21.87-ready-defaults';
@@ -12,8 +13,8 @@ const connections=settings=>Object.fromEntries(Object.entries(settings).filter((
 // only for selected source requests or explicit preview; new saves stay strict.
 // Share the same store serialization pattern as repository scope commits.
 const storeQueues=new WeakMap();
-function serial(store,task){
-  const pending=(storeQueues.get(store)??Promise.resolve()).catch(()=>{}).then(task);
+function serial(store,task,{mutating=true}={}){
+  const pending=(storeQueues.get(store)??Promise.resolve()).catch(()=>{}).then(()=>mutating?memoStorageLock(store,'memo-settings-v1',task):task());
   storeQueues.set(store,pending);return pending;
 }
 /** Installation-wide configuration. Chat contents never enter this document. */
@@ -26,7 +27,8 @@ export function createGlobalSettings({getStore,onApply=()=>{}}) {
     if(!archived.found)await verifiedWrite(store,DEFAULTS_ARCHIVE_ADDRESS,{version:1,migration:DEFAULTS_MIGRATION_ID,source:address,document:clone(previous)});
     else if(archived.value?.version!==1||archived.value?.migration!==DEFAULTS_MIGRATION_ID||!archived.value.document)throw new Error('旧设置归档格式异常，未覆盖设置');
   }
-  async function migrate(previous,address){
+  function migrate(previous,address){return memoStorageLock(store,'memo-settings-v1',()=>migrateLocked(previous,address));}
+  async function migrateLocked(previous,address){
     const valid=validateStoredSettings(previous.settings);
     await archiveBeforeMigration(previous,address);
     // Another controller may have completed migration while archive I/O was
@@ -51,7 +53,7 @@ export function createGlobalSettings({getStore,onApply=()=>{}}) {
         if(old.found){if(old.value?.version!==1)throw new Error('API 设置版本无效，未覆盖原数据');saved=await migrate(old.value,API_SETTINGS_ADDRESS);}
       }
       loaded=true;onApply(value());return value();
-      });
+      },{mutating:false});
     })().finally(()=>{loading=null;});return loading;
   }
   function save(patch,{adopt=false}={}){

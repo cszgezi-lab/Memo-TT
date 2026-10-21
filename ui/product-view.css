@@ -1270,3 +1270,5 @@
 #memo-product-shell .memo-persona-injection-content .memo-packet{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;max-height:none}
 
 #memo-product-shell .memo-log-toolbar{flex-wrap:wrap}#memo-product-shell .memo-log-toolbar :is(.memo-template-tabs,.memo-actions){flex-shrink:0;max-width:100%;flex-wrap:wrap}#memo-product-shell .memo-log-toolbar button{flex-shrink:0}
+
+#memo-product-shell .memo-preset-armor button[aria-pressed="true"]{background:color-mix(in srgb,var(--memo-accent) 22%,transparent);border-color:var(--memo-accent)}

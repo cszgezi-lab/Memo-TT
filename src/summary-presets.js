@@ -1,3 +1,4 @@
+import {normalizeSummaryArmor,summaryArmorEnabled,summaryArmorPreview,applySummaryArmor} from './summary-armor.js';
 import { clone, isPlainObject, stableStringify } from './utils.js';
 import { SUMMARY_OUTPUT_CONTRACT } from './contracts.js';
 import { moduleSummaryContract, moduleSummaryInstructions } from './summary-wire.js';
@@ -32,7 +33,7 @@ export function defaultSummaryPreset() {
   return {id:'default',name:'推荐 · 完整剧情记忆',instructions:moduleSummaryInstructions,rules:clone(SUMMARY_PRESET_RULES)};
 }
 export function validateSummaryPreset(value) {
-  if(!isPlainObject(value)||Object.keys(value).some(k=>!['id','name','instructions','rules'].includes(k)))throw new Error('总结预设格式不正确');
+  if(!isPlainObject(value)||Object.keys(value).some(k=>!['id','name','instructions','rules','armor'].includes(k)))throw new Error('总结预设格式不正确');
   // Add only the newly introduced rules to old DIY libraries. Existing user
   // rules, including deliberately empty ones, must never be overwritten.
   if(isPlainObject(value.rules)){
@@ -44,6 +45,7 @@ export function validateSummaryPreset(value) {
   if(typeof value.instructions!=='string'||!value.instructions.trim()||value.instructions.length>24000)throw new Error('总提示词不能为空，最多 24000 字');
   if(!isPlainObject(value.rules)||Object.keys(value.rules).length!==paths.length||paths.some(path=>typeof value.rules[path]!=='string'||value.rules[path].length>16000))throw new Error('预设模块规则缺失或过长，请从当前推荐预设复制后修改');
   if(Object.keys(value.rules).some(path=>!paths.includes(path))||JSON.stringify(value).length>80000)throw new Error('预设包含未知规则或总长度超过 80000 字');
+  if(Object.hasOwn(value,'armor'))value={...value,armor:normalizeSummaryArmor(value.armor)};
   return clone(value);
 }
 export function readSummaryPresets(text='') {
@@ -58,7 +60,7 @@ export function readSummaryPresets(text='') {
 export function activeSummaryPreset(text='') {
   const library=readSummaryPresets(text),preset=library.items.find(p=>p.id===library.activeId),defaults=defaultSummaryPreset();
   // Unchanged recommendation keeps the legacy request and checkpoint binding.
-  return preset.instructions===defaults.instructions&&stableStringify(preset.rules)===stableStringify(defaults.rules)?null:preset;
+  return preset.instructions===defaults.instructions&&stableStringify(preset.rules)===stableStringify(defaults.rules)&&!summaryArmorEnabled(preset.armor)?null:preset;
 }
 export function freezeSummaryRules(recordingRules,presets='',narrativeExtraction='') {
   const summaryPreset=activeSummaryPreset(presets);
@@ -80,6 +82,9 @@ export function applySummaryPreset(contract,preset) {
 }
 export function summaryPresetPreview(preset) {
   preset=validateSummaryPreset(preset);
-  const defaults=defaultSummaryPreset(),unchanged=preset.instructions===defaults.instructions&&stableStringify(preset.rules)===stableStringify(defaults.rules);
-  return {system:unchanged?moduleSummaryInstructions:`${PRESET_TRANSPORT_GUARD}\n${preset.instructions}`,outputContract:applySummaryPreset(moduleSummaryContract(SUMMARY_OUTPUT_CONTRACT),unchanged?null:preset)};
+  const defaults=defaultSummaryPreset(),unchanged=preset.instructions===defaults.instructions&&stableStringify(preset.rules)===stableStringify(defaults.rules)&&!summaryArmorEnabled(preset.armor);
+  const preview={system:unchanged?moduleSummaryInstructions:`${PRESET_TRANSPORT_GUARD}\n${preset.instructions}`,outputContract:applySummaryPreset(moduleSummaryContract(SUMMARY_OUTPUT_CONTRACT),unchanged?null:preset)};
+  if(!Object.hasOwn(preset,'armor'))return preview;
+  const payload=applySummaryArmor({stream:false,messages:[{role:'system',content:preview.system},{role:'user',content:JSON.stringify({sourceMessages:[],outputContract:preview.outputContract})}]},preset.armor);
+  return {...preview,system:payload.messages[0].content,armor:summaryArmorPreview(preset.armor),transport:{stream:false,...(payload.tools?{tools:payload.tools,tool_choice:payload.tool_choice}:{})},...(preset.armor.userPadding?{compatibilityPadding:JSON.parse(payload.messages[1].content).compatibilityPadding}:{})};
 }

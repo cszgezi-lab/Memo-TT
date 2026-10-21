@@ -4,6 +4,7 @@ import { isMissingProductEntry } from './product-host-adapters.js';
 import { PersistenceError } from './errors.js';
 import { encodeVectorDocumentAsync, decodeVectorDocumentAsync, sameVectorDocument, vectorStorageArtifact } from './product-vector-storage.js';
 import {losslessStore,verifiedWrite,runStorageOperation} from './reliable-storage.js';
+import {memoStorageLock} from './memo-storage-lock.js';
 
 const NS = 'shiyi-product-workspace';
 const queues = new WeakMap();
@@ -48,7 +49,7 @@ export function createWorkspace(bound) {
   function enqueue(name,task) {
     let byKey = queues.get(store); if (!byKey) { byKey = new Map(); queues.set(store, byKey); }
     const key = `${prefix}-${name}`;
-    const operation = (byKey.get(key) ?? Promise.resolve()).catch(() => {}).then(task);
+    const operation = (byKey.get(key) ?? Promise.resolve()).catch(() => {}).then(()=>scope.configuration==='installation-v1'&&name==='custom-modules'?memoStorageLock(store,'memo-settings-v1',task):task());
     byKey.set(key, operation);
     return operation.finally(() => { if (byKey.get(key) === operation) byKey.delete(key); });
   }
