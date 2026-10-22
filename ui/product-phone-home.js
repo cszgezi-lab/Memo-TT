@@ -1,4 +1,4 @@
-import { summaryProgress, hasNewerSavedCoverage } from '../src/product-auto-summary.js';
+import { autoSummaryPlan, summaryProgress, hasNewerSavedCoverage } from '../src/product-auto-summary.js';
 import { currentPersonaProfiles } from '../src/dynamic-persona.js';
 import { recordTitle, sourceFloors } from '../src/product-narrative.js';
 
@@ -115,6 +115,16 @@ export function paintPhoneHome(panel, s = {}) {
   const personaBusy = Boolean(persona.busy || personaTask);
   const memoryRow = memoryRows.find(row => row.status === 'running') ?? memoryRows.find(row => isFailure(row) || isPending(row));
   const memoryRange = range(memoryTask) || range(memoryRow);
+  // Use the application's source-validated plan when available. This is a
+  // projection only: the scheduler still owns readiness and all dispatch gates.
+  const nextMemory = s.automatic ?? autoSummaryPlan(memoryRows, {
+    startFloor: s.autoStartFloor ?? 1, lastIndex: s.autoLastIndex ?? null,
+    batchSize: settings.autoSummaryEvery ?? 20, keepRecent: settings.autoKeepRecent ?? 0,
+  });
+  const waitingMemory = s.chatReady && !memoryBusy && !memoryRange && validFloor(nextMemory.lastIndex);
+  const nextSize = nextMemory.nextEnd - nextMemory.nextStart + 1;
+  const accumulated = Math.max(0, Math.min(nextSize, nextMemory.eligibleEnd - nextMemory.nextStart + 1));
+  const remaining = Math.max(0, nextMemory.nextEnd + nextMemory.keepRecent - nextMemory.lastIndex);
   const personaRange = range(candidate?.current) || range(candidate?.plan) || (personaBusy ? range({ startIndex: persona.plan?.nextStart, endIndex: persona.plan?.nextEnd }) : '');
   const memoryProgress = memoryTask ? countProgress(memoryTask.completedBatches, memoryTask.totalBatches) : null;
   const personaProgress = candidate?.progress ?? null;
@@ -125,11 +135,11 @@ export function paintPhoneHome(panel, s = {}) {
   const workflows = [
     {
       kind: 'memory', state: memoryState, busy: memoryBusy, failures: memoryFailures, progress: memoryProgress,
-      range: memoryRange || '尚无当前批次',
-      phase: memoryBusy ? phaseLabels[memoryTask?.phase] ?? '正在整理' : memoryFailures ? '可到任务中重试或处理' : '等待下一批任务',
+      range: memoryRange || (waitingMemory ? range({ startIndex: nextMemory.nextStart, endIndex: nextMemory.nextEnd }) : '尚无当前批次'),
+      phase: memoryBusy ? phaseLabels[memoryTask?.phase] ?? '正在整理' : memoryFailures ? '可到任务中重试或处理' : waitingMemory ? remaining ? '还差 ' + remaining + ' 楼凑满一批' : '已凑满一批' : '等待下一批任务',
       coverage: coverageText(memory, '尚无已保存记忆', '已保存'),
-      note: memoryBusy ? '当前批次保存后，才会计入已保存范围。' : memoryFailures ? '已保存记忆保留，未完成批次单独处理。' : '',
-      automatic: automaticMemoryText(settings, monitor), progressLabel: '本次生成进度',
+      note: memoryBusy ? '当前批次保存后，才会计入已保存范围。' : memoryFailures ? '已保存记忆保留，未完成批次单独处理。' : waitingMemory ? '下一批 ' + nextMemory.nextStart + '–' + nextMemory.nextEnd + ' 楼 · 已凑 ' + accumulated + '/' + nextSize + ' 楼 · 最近 ' + nextMemory.keepRecent + ' 楼保留原文' : '',
+      automatic: automaticMemoryText(settings, monitor), progressLabel: waitingMemory ? '下一批 · 已凑 ' + accumulated + '/' + nextSize + ' 楼' : '本次生成进度',
     },
     {
       kind: 'persona', state: personaState, busy: personaBusy, failures: personaFailures, progress: personaProgress,
