@@ -48,6 +48,7 @@ const CODES = {
   MODEL_UNAVAILABLE:'请先在 API 中填写并保存总结地址与模型。',
   PROVIDER_PROFILE_INVALID:'API 地址或认证配置不正确。',
   SUMMARY_RESPONSE_INVALID:'模型返回的内容不符合总结格式，本次结果未标记为成功。',
+  SUMMARY_TOOL_RESPONSE_INVALID:'反截断工具回复不完整或格式不匹配，本批未保存；可明确点击“重试本批”重新请求。',
   VALIDATION_ERROR:'返回内容未通过结构或来源校验，本次结果未保存。请查看运行日志的校验字段；这不等于回复上限不足。',
   SUMMARY_RESPONSE_ERROR:'模型响应中断或内容格式不正确，请重试。',
   PERSISTENCE_ERROR:'保存或读回校验失败，不能确认本次结果已保存。',

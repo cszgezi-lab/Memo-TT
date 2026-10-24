@@ -509,7 +509,7 @@ export function createProductShellController({
     return null;
   }
 
-  async function startSummary({ focus = state.focus, confirmedFocus = state.focusConfirmed, trigger = 'manual', requireFloorSummaries = false, operationId = makeId('product-summary'), resume = false, excludeOperations = [], onDiagnostic = () => {} } = {}) {
+  async function startSummary({ focus = state.focus, confirmedFocus = state.focusConfirmed, trigger = 'manual', requireFloorSummaries = false, operationId = makeId('product-summary'), resume = false, excludeOperations = [], onDiagnostic = () => {}, allowInvalidToolRetry = false } = {}) {
     if (state.status === PRODUCT_SHELL_STATUS.INVALIDATED) return { status: state.status, errorCode: state.errorCode };
     if (!state.session || !repository) return { status: PRODUCT_SHELL_STATUS.UNAVAILABLE, errorCode: state.capabilities.persistence === 'unavailable' ? 'PERSISTENCE_UNAVAILABLE' : 'CHAT_IDENTITY_NOT_READY' };
     if (activeTask) return { status: PRODUCT_SHELL_STATUS.FAILED, errorCode: 'HOST_CONTRACT_INVALID' };
@@ -620,8 +620,8 @@ export function createProductShellController({
     summaryRepository.commitBundle=async (...args)=>{validateBundle(args[0]);return repository.commitBundle(...args);};
     summaryRepository.listRecords=async scope=>(await repository.readScope(scope,{includeOperations:[operationId],excludeOperations,includeHistory:false})).records;
     try {
-      engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, preferBuffered:true, summaryArmor:summaryPresetFromRules(batch.rules)?.armor, supplementModel:supplementModelFactory?.()??null, staged:state.settings.summaryStaged, verified:state.settings.summaryReviewEnabled, isolateIds:true, packRequests:state.job.requestPlanning==='wire-v1', maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: state.job.splitUnits, requireFloorSummaries, stageCrossBatchMerges:true, recoveryEnabled:true, outputReserveUnits: 0, now });
-      const result = await engine.process(batch, { signal: preflightAbort.signal, onDiagnostic, onSourcePlan:plan=>{
+      engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, preferStreaming:true, summaryArmor:summaryPresetFromRules(batch.rules)?.armor, supplementModel:supplementModelFactory?.()??null, staged:state.settings.summaryStaged, verified:state.settings.summaryReviewEnabled, isolateIds:true, packRequests:state.job.requestPlanning==='wire-v1', maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: state.job.splitUnits, requireFloorSummaries, stageCrossBatchMerges:true, recoveryEnabled:true, outputReserveUnits: 0, now });
+      const result = await engine.process(batch, { signal: preflightAbort.signal, onDiagnostic, allowInvalidToolRetry, onSourcePlan:plan=>{
         if(!tokenValid(token,session)||preflightAbort.signal.aborted||activeTask!==operationId||abortController!==preflightAbort)throw Object.assign(new Error('任务已停止'),{code:'CANCELED'});
         if(plan.operationId!==operationId||plan.sourceRevision!==batch.sourceRevision||stableStringify(plan.scope)!==stableStringify(session.scope))throw Object.assign(new Error('总结来源计划不一致'),{code:'SOURCE_INVALIDATED'});
         summarySourceGuard={operationId,token,sourceRevision:plan.sourceRevision,scopeKey:stableStringify(plan.scope),range:clone(plan.range),children:new Map(plan.children.map(child=>[child.operationId,Object.freeze({...child})])),report:onDiagnostic};

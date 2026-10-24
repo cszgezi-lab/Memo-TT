@@ -729,11 +729,16 @@ export class MemoryRepository {
   async recoverOperationReceipt(scope,operationId){
     const found=await this.getOperationReceipt(operationId);
     if(found){if(found.scopeKey!==scopeKey(scope))throw new ScopeConflictError('receipt scope mismatch');return found;}
-    const snapshot=await this.readScope(scope),p=snapshot.pointer;
+    // Keep the same complete integrity check and effective projection, then
+    // inspect the chunks already verified by that read. A missing receipt is
+    // normal for new work and must not reread every historical native entry.
+    const header=await this._loadScope(scope),verified=VERIFIED_SCOPE_READS.get(header);
+    VERIFIED_SCOPE_READS.delete(header);
+    const snapshot=await projectScope(this,header,verified.chunks),p=snapshot.pointer;
     if(p.operationId!==operationId){
       for(const ref of snapshot.manifest?.chunks??[]){
-        const {value:c}=await optionalGet(this.store,{namespace:this.namespace,key:ref.key});
-        if(c?.operationId===operationId&&c.bundleHash&&sha256(c)===ref.sha256)return {operationId,scope:clone(scope),scopeKey:scopeKey(scope),sourceRevision:c.sourceRevision,bundleHash:c.bundleHash,committedRevision:c.committedRevision,readbackVerified:true};
+        const c=verified.chunks.get(ref.key);
+        if(c?.operationId===operationId&&c.bundleHash)return {operationId,scope:clone(scope),scopeKey:scopeKey(scope),sourceRevision:c.sourceRevision,bundleHash:c.bundleHash,committedRevision:c.committedRevision,readbackVerified:true};
       }
       return null;
     }

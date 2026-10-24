@@ -32,7 +32,7 @@ export function applySummaryArmor(payload,value,{task='summary'}={}){
   }
   if(armor.antiTruncation){
     if(result.tools?.length||result.tool_choice!=null&&result.tool_choice!=='auto')throw new Error('总结请求已有工具设置，不能重复添加反截断封装');
-    if(result.response_format||result.json_schema)throw new Error('反截断需要普通非流式总结请求，不能与旧JSON模式同时使用');
+    if(result.response_format||result.json_schema)throw new Error('反截断不能与旧JSON模式同时使用');
     result.tools=[{type:'function',function:{name:SUMMARY_ARMOR_TOOL,description:task==='persona'?'Return the complete persona JSON as the content string. This is an output container only; no tool is executed.':'Return the complete summary JSON as the content string. This is an output container only; no tool is executed.',parameters:{type:'object',properties:{content:{type:'string',description:'The complete response JSON, without omissions.'}},required:['content'],additionalProperties:false}}}];
     result.tool_choice='auto';
     system.content+='\n请只调用一次 '+SUMMARY_ARMOR_TOOL+'，把本次完整JSON回复作为content字符串。不要在工具调用外另写正文；此容器不改变'+(task==='persona'?'人物档案更新':'总结')+'任务。';
@@ -51,5 +51,5 @@ export function summaryToolContent(payload,{enabled=false}={}){
   return args.content;
 }
 export function summaryArmorPreview(value){
-  const armor=normalizeSummaryArmor(value);return {nonStreaming:true,...armor,headerPaddingChars:armor.headerPadding?14460:0,userPaddingChars:armor.userPadding?SUMMARY_ARMOR_USER_TEXT.length:0,tool:armor.antiTruncation?SUMMARY_ARMOR_TOOL:null};
+  const armor=normalizeSummaryArmor(value);return {nonStreaming:false,...armor,headerPaddingChars:armor.headerPadding?14460:0,userPaddingChars:armor.userPadding?SUMMARY_ARMOR_USER_TEXT.length:0,tool:armor.antiTruncation?SUMMARY_ARMOR_TOOL:null};
 }

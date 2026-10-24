@@ -85,6 +85,6 @@ export function summaryPresetPreview(preset) {
   const defaults=defaultSummaryPreset(),unchanged=preset.instructions===defaults.instructions&&stableStringify(preset.rules)===stableStringify(defaults.rules)&&!summaryArmorEnabled(preset.armor);
   const preview={system:unchanged?moduleSummaryInstructions:`${PRESET_TRANSPORT_GUARD}\n${preset.instructions}`,outputContract:applySummaryPreset(moduleSummaryContract(SUMMARY_OUTPUT_CONTRACT),unchanged?null:preset)};
   if(!Object.hasOwn(preset,'armor'))return preview;
-  const payload=applySummaryArmor({stream:false,messages:[{role:'system',content:preview.system},{role:'user',content:JSON.stringify({sourceMessages:[],outputContract:preview.outputContract})}]},preset.armor);
-  return {...preview,system:payload.messages[0].content,armor:summaryArmorPreview(preset.armor),transport:{stream:false,...(payload.tools?{tools:payload.tools,tool_choice:payload.tool_choice}:{})},...(preset.armor.userPadding?{compatibilityPadding:JSON.parse(payload.messages[1].content).compatibilityPadding}:{})};
+  const payload=applySummaryArmor({stream:true,messages:[{role:'system',content:preview.system},{role:'user',content:JSON.stringify({sourceMessages:[],outputContract:preview.outputContract})}]},preset.armor);
+  return {...preview,system:payload.messages[0].content,armor:summaryArmorPreview(preset.armor),transport:{stream:true,...(payload.tools?{tools:payload.tools,tool_choice:payload.tool_choice}:{})},...(preset.armor.userPadding?{compatibilityPadding:JSON.parse(payload.messages[1].content).compatibilityPadding}:{})};
 }

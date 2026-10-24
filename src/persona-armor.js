@@ -7,7 +7,7 @@ import {estimateUnits,sha256} from './utils.js';
 export const activePersonaArmor=settings=>normalizeSummaryArmor(activeSummaryPreset(settings?.summaryPresets??'')?.armor);
 export function preparePersonaTransport(request,config,{replay=false,compatibility}={}){
   const armor=normalizeSummaryArmor(replay?compatibility:activePersonaArmor(config));
-  const base={model:config.dynamicPersonaModel,messages:request.messages,stream:false,...(config.dynamicPersonaJsonMode&&!armor.antiTruncation?{response_format:{type:'json_object'}}:{}),...(config.dynamicPersonaOutputTokens>0?{max_tokens:config.dynamicPersonaOutputTokens}:{})};
+  const base={model:config.dynamicPersonaModel,messages:request.messages,stream:true,...(config.dynamicPersonaJsonMode&&!armor.antiTruncation?{response_format:{type:'json_object'}}:{}),...(config.dynamicPersonaOutputTokens>0?{max_tokens:config.dynamicPersonaOutputTokens}:{})};
   const payload=applySummaryArmor(base,armor,{task:'persona'});
   return {...request,messages:payload.messages,transportPayload:payload,...(summaryArmorEnabled(armor)?{wireCompatibility:armor}:{})};
 }

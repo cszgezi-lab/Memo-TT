@@ -66,6 +66,11 @@ function stripJsonFence(text) {
   return fenced ? fenced[1].trim() : value;
 }
 
+function manualToolRetryRequired(){
+  const error=new SummaryResponseError('不完整反截断回复等待明确重试',{stage:'parse_content',reason:'tool_manual_retry_required'});
+  error.code='SUMMARY_TOOL_RESPONSE_INVALID';return error;
+}
+
 async function parseModelResponse(raw, { onMetadata = () => {}, onNormalize = () => {}, allowArray = false, allowToolTransport = false } = {}) {
   const parseJson=text=>{const parsed=parseSummaryJson(text);if(parsed.duplicateEmptyModules){try{onNormalize({duplicateEmptyModules:parsed.duplicateEmptyModules});}catch{/* diagnostics do not decide validity */}}return parsed.value;};
   const status = responseStatus(raw);
@@ -82,6 +87,10 @@ async function parseModelResponse(raw, { onMetadata = () => {}, onNormalize = ()
   // result even when the provider happened to return syntactically valid JSON.
   const finishReason = payload?.choices?.[0]?.finish_reason ?? payload?.choices?.[0]?.finishReason ?? payload?.finish_reason ?? payload?.finishReason;
   let content=payload?.choices?.[0]?.message?.content??payload?.output_text;
+  // Some compatible gateways return the complete text as ordered text parts.
+  // Join only an all-text envelope. Refusals, images and unknown parts are not
+  // silently discarded, and the resulting JSON still passes every validator.
+  if(Array.isArray(content)&&content.length>0&&content.every(part=>part&&part.type==='text'&&typeof part.text==='string'))content=content.map(part=>part.text).join('');
   const metadata=safeLogDetails({status,finishReason:finishReason??'unknown',truncated:['length','max_tokens','truncated','abort'].includes(String(finishReason).toLowerCase()),promptTokens:payload?.usage?.prompt_tokens,completionTokens:payload?.usage?.completion_tokens,totalTokens:payload?.usage?.total_tokens,reasoningTokens:payload?.usage?.completion_tokens_details?.reasoning_tokens,responseChars:typeof content==='string'?content.length:undefined});
   try{onMetadata(metadata);}catch{/* diagnostics are not part of model validation */}
   if (['length', 'max_tokens', 'truncated', 'abort'].includes(String(finishReason).toLowerCase())) {
@@ -94,8 +103,7 @@ async function parseModelResponse(raw, { onMetadata = () => {}, onNormalize = ()
   const toolContent=summaryToolContent(payload,{enabled:allowToolTransport});
   if(toolContent!==null){content=toolContent;payload={...payload,choices:[{...payload.choices[0],message:{...payload.choices[0].message,content:toolContent}}]};}
   if(payload?.choices&&typeof content!=='string')throw new SummaryResponseError('summary response has no textual content',{...metadata,reason:'empty_model_content',stage:'parse_content',contentType:contentType(content),choicesCount:payload.choices.length});
-  if (payload?.choices?.[0]?.message?.content !== undefined) payload = payload.choices[0].message.content;
-  else if (payload?.output_text !== undefined) payload = payload.output_text;
+  if (payload?.choices?.[0]?.message?.content !== undefined||payload?.output_text !== undefined) payload = content;
   if (typeof payload === 'string') {
     const text=stripJsonFence(payload);
     try { payload=parseJson(text); } catch (error) { throw new SummaryResponseError('summary model content is not valid JSON', jsonFailure(error,text,metadata)); }
@@ -159,7 +167,7 @@ function modelEnvelope(request) {
 
 const FORMAT_RECOVERY_RULE='上次完整返回的正文未形成有效的总结 JSON。请依据同一完整原文和本次 outputContract 重新输出单个完整 JSON，不加解释或 Markdown，不省略必需区块和逐楼摘要，不猜测事实或来源。';
 
-function modelInvoker(model,{armor=null,preferBuffered=false}={}) {
+function modelInvoker(model,{armor=null,preferBuffered=false,preferStreaming=false}={}) {
   if (typeof model === 'function') return model;
   if (typeof model?.summarize === 'function') return model.summarize.bind(model);
   if (typeof model?.generate === 'function') return model.generate.bind(model);
@@ -172,7 +180,7 @@ function modelInvoker(model,{armor=null,preferBuffered=false}={}) {
       const envelope=modelEnvelope(request);
       let payload={
       model: model.profile?.model,
-      ...(preferBuffered?{stream:false}:summaryTransportOptions(model.profile)),
+      ...(preferStreaming?{stream:true}:preferBuffered?{stream:false}:summaryTransportOptions(model.profile)),
       ...(Number.isSafeInteger(request?.effectiveMaxTokens) && request.effectiveMaxTokens > 0
         ? { max_tokens: request.effectiveMaxTokens }
         : model.profile?.maxTokens > 0 ? { max_tokens: model.profile.maxTokens } : {}),
@@ -389,10 +397,10 @@ function compactRecoveryContext(request, targetUnits, providerPayload) {
 
 /** P1 one-request-per-segment orchestration with atomic bundle commits. */
 export class SummaryEngine {
-  constructor({ model, supplementModel=null, staged=false, verified=false, isolateIds=false, packRequests=false, repository, maxInputUnits = 12000, maxSourceUnits = null, requestSafetyUnits = null, outputReserveUnits = null, maxRelevantRecords = 64, requireFloorSummaries = false, stageCrossBatchMerges = false, recoveryEnabled=false, summaryArmor=null, preferBuffered=false, now = () => Date.now() } = {}) {
+  constructor({ model, supplementModel=null, staged=false, verified=false, isolateIds=false, packRequests=false, repository, maxInputUnits = 12000, maxSourceUnits = null, requestSafetyUnits = null, outputReserveUnits = null, maxRelevantRecords = 64, requireFloorSummaries = false, stageCrossBatchMerges = false, recoveryEnabled=false, summaryArmor=null, preferBuffered=false, preferStreaming=false, now = () => Date.now() } = {}) {
     this.summaryArmor=normalizeSummaryArmor(summaryArmor);
-    this.model = modelInvoker(model,{armor:this.summaryArmor,preferBuffered});
-    this.supplementModel = supplementModel ? modelInvoker(supplementModel,{armor:this.summaryArmor,preferBuffered}) : this.model;
+    this.model = modelInvoker(model,{armor:this.summaryArmor,preferBuffered,preferStreaming});
+    this.supplementModel = supplementModel ? modelInvoker(supplementModel,{armor:this.summaryArmor,preferBuffered,preferStreaming}) : this.model;
     this.verified = verified;
     this.staged = staged && !verified;
     this.packRequests = packRequests;
@@ -598,7 +606,7 @@ export class SummaryEngine {
     return { request, context, configuredLimit };
   }
 
-  async process(batch, { signal, relevantRecords = null, onProgress = null, onSourcePlan = null, onDiagnostic = () => {}, correctionAuthorizations = [] } = {}) {
+  async process(batch, { signal, relevantRecords = null, onProgress = null, onSourcePlan = null, onDiagnostic = () => {}, correctionAuthorizations = [], allowInvalidToolRetry = false } = {}) {
     const emit=(phase,details={},level='info')=>{try{onDiagnostic({phase,level,details:safeLogDetails(details)});}catch{/* log failure must not affect a commit */}};
     const focus = focusGate(batch?.focusSpec);
     if (!focus.confirmed) {
@@ -615,6 +623,7 @@ export class SummaryEngine {
     }
     const checkpoint = typeof this.repository.getCheckpoint === 'function' ? await this.repository.getCheckpoint(batch.operationId, batch.scope) : null;
     const frozenPlan = this.packRequests ? await this.repository.readPrivateTask?.(batch.scope, batch.operationId) : null;
+    if(frozenPlan?.manualRetryRequired&&frozenPlan.retryModel&&!allowInvalidToolRetry)throw manualToolRetryRequired();
     const contextBinding=value=>sha256({scope:value.scope,sourceRevision:value.sourceRevision,rules:value.rules,focus:value.focusSpec,configVersion:value.configVersion,rulesVersion:value.rulesVersion});
     const initialContextBinding=contextBinding(batch);
     const initialContextRevision=this.packRequests&&typeof this.repository.getCommittedRevision==='function'?await this.repository.getCommittedRevision(batch.scope):null;
@@ -801,6 +810,7 @@ export class SummaryEngine {
         const resultBinding=sha256({sourceRevision:child.sourceRevision,scope:child.scope,rules:child.rules,focus:child.focusSpec,configVersion:child.configVersion});
         const prior=this.recoveryEnabled?await this.repository.readPrivateTask?.(child.scope,child.operationId):null;
         if(prior?.binding&&prior.binding!==resultBinding)throw new ScopeConflictError('saved response source or rules changed');
+        if(prior?.manualRetryRequired&&prior.retryModel&&!allowInvalidToolRetry)throw manualToolRetryRequired();
         const keepResponse=async raw=>{
           throwIfAborted(signal);
           if(!this.recoveryEnabled||!this.repository.savePrivateTask)return;
@@ -819,7 +829,7 @@ export class SummaryEngine {
           }
           phase=previousPhase;
         };
-        let raw,cachedForeignSource=false;
+        let raw,cachedForeignSource=false,cachedInvalidTool=null;
         if(prior?.raw!==undefined&&!prior.retryModel&&!this.verified&&!this.staged){
           // Explicit resume must not replay an irreparably foreign source
           // forever. Inspect only contract locators, never story/DIY values.
@@ -839,14 +849,16 @@ export class SummaryEngine {
             const expanded=expandModuleSummary(expandCompactSummary(cached,child.sourceMessages),child.sourceMessages);
             const bound=bindDraftBundle(expanded,{scope:child.scope,operationId:child.operationId,expectedRevision:child.expectedRevision,sourceRefs:evidenceRefsFor(child)});
             cachedForeignSource ||= invalidResponseSource(validateDraftBundle(bound,{allowedSourceIds:allowed,knownRecordIds:context.ids??new Set(),expectedSourceRefs:sourceRefsFor(child)}));
-          }catch(error){if(invalidResponseSource(error?.details))cachedForeignSource=true;/* Other parse/shape recovery remains authoritative. */}
-          if(cachedForeignSource){
-            const patch={retryModel:true};this.repository.retainPrivateResponse?.(child.scope,child.operationId,patch);
+          }catch(error){if(invalidResponseSource(error?.details))cachedForeignSource=true;else if(error?.code==='SUMMARY_TOOL_RESPONSE_INVALID')cachedInvalidTool=error;/* Other parse/shape recovery remains authoritative. */}
+          if(cachedForeignSource||cachedInvalidTool){
+            const patch={retryModel:true,...(cachedInvalidTool?{manualRetryRequired:true}:{})};this.repository.retainPrivateResponse?.(child.scope,child.operationId,patch);
             await this.repository.savePrivateTask?.(child.scope,child.operationId,patch).catch(error=>emit('checkpoint_warning',{...baseDetails,...errorDiagnostics(error),storageArtifact:'response-cache'},'warning'));
-            emit('resume_rejected_source',baseDetails,'warning');
+            if(cachedForeignSource)emit('resume_rejected_source',baseDetails,'warning');
+            else emit('response',{...baseDetails,...errorDiagnostics(cachedInvalidTool),code:cachedInvalidTool.code},'warning');
+            if(cachedInvalidTool&&!allowInvalidToolRetry)throw cachedInvalidTool;
           }
         }
-        if(prior?.raw!==undefined&&!prior.retryModel&&!cachedForeignSource){raw=prior.raw;emit('resume_response',baseDetails,'success');}
+        if(prior?.raw!==undefined&&!prior.retryModel&&!cachedForeignSource&&!cachedInvalidTool){raw=prior.raw;emit('resume_response',baseDetails,'success');}
         else{
           if(this.staged){
             const checkCoverage=output=>{
@@ -891,6 +903,10 @@ export class SummaryEngine {
             if(!signal?.aborted&&!['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(repairError?.code)&&repairError?.name!=='AbortError')repairError.details={...repairError.details,repairAttempted:true};
             throw repairError;
           }
+        }
+        if(prior?.manualRetryRequired||cachedInvalidTool){
+          const patch={manualRetryRequired:false};this.repository.retainPrivateResponse?.(child.scope,child.operationId,patch);
+          await this.repository.savePrivateTask?.(child.scope,child.operationId,patch).catch(error=>emit('checkpoint_warning',{...baseDetails,...errorDiagnostics(error),storageArtifact:'response-cache'},'warning'));
         }
         if(this.verified&&parsed?.format==='shiyi-module-records-v1'){
           parsed={...parsed};for(const key of VERIFICATION_MODULES)if(!Object.hasOwn(parsed,key))parsed[key]=[];
@@ -1174,10 +1190,12 @@ export class SummaryEngine {
           // Keep the paid main response; an explicit retry calls only review.
           await this.repository.savePrivateTask?.(child.scope,child.operationId,{verifiedDraft:null,verificationRetry:phase!=='verification_response'}).catch(e=>emit('checkpoint_warning',{...errorDiagnostics(e),storageArtifact:'checkpoint'},'warning'));
         }
-        if(this.recoveryEnabled&&!signal?.aborted&&phase==='response'&&['MODEL_OUTPUT_TRUNCATED','SUMMARY_RESPONSE_ERROR','SUMMARY_RESPONSE_INVALID','MODEL_OUTPUT_BLOCKED'].includes(error?.code)){
+        if(this.recoveryEnabled&&!signal?.aborted&&phase==='response'&&['MODEL_OUTPUT_TRUNCATED','SUMMARY_RESPONSE_ERROR','SUMMARY_RESPONSE_INVALID','SUMMARY_TOOL_RESPONSE_INVALID','MODEL_OUTPUT_BLOCKED'].includes(error?.code)){
           // An incomplete/blocked response cannot be repaired as a complete JSON
           // draft. A manual retry may use a newly selected model/output budget.
-          await this.repository.savePrivateTask?.(child.scope,child.operationId,{retryModel:true}).catch(error=>emit('checkpoint_warning',{...baseDetails,...errorDiagnostics(error),storageArtifact:'checkpoint'},'warning'));
+          const patch={retryModel:true,...(error?.code==='SUMMARY_TOOL_RESPONSE_INVALID'?{manualRetryRequired:true}:{})};
+          this.repository.retainPrivateResponse?.(child.scope,child.operationId,patch);
+          await this.repository.savePrivateTask?.(child.scope,child.operationId,patch).catch(error=>emit('checkpoint_warning',{...baseDetails,...errorDiagnostics(error),storageArtifact:'checkpoint'},'warning'));
         }
         emit(error.details?.stage==='validate'?'validate':phase,{...baseDetails,...errorDiagnostics(error),code:signal?.aborted?'CANCELED':error?.code,elapsedMs:this.now()-started},signal?.aborted?'warning':'error');
         if (error?.name === 'AbortError' || error?.code === 'CANCELED' || signal?.aborted) {

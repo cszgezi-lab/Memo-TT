@@ -1027,7 +1027,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     return true;
   }
   async function summarize(options={}){return logged('summary',run=>summarizeTask({...options,diagnosticRun:run}),{trigger:options.trigger??'manual'});}
-  async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigger='manual',replaceBatchId=null,resume=false,rebuildCandidate=false,missingOnly=false,previewHash=null,diagnosticRun}={}){
+  async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigger='manual',replaceBatchId=null,resume=false,rebuildCandidate=false,missingOnly=false,previewHash=null,diagnosticRun,allowInvalidToolRetry=false}={}){
     const taskStarted=Date.now();let firstRequestAt=null,modelMs=0,publishMs=0;
     if(trigger==='manual'&&!replaceBatchId){
       const version=cancelVersion;
@@ -1101,7 +1101,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         summaryFeedback('running',`正在总结 ${state.progress}`,trigger);
         currentBatch={...currentBatch,freshStart:false};
         await workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]);op.check();
-        const result=await core.startSummary({focus,confirmedFocus:true,trigger,operationId,resume:continuing,excludeOperations:[...currentBatch.attempts,...(currentBatch.excludeOperations??[])],requireFloorSummaries:true,onDiagnostic:event=>{
+        const result=await core.startSummary({focus,confirmedFocus:true,trigger,operationId,resume:continuing,excludeOperations:[...currentBatch.attempts,...(currentBatch.excludeOperations??[])],requireFloorSummaries:true,allowInvalidToolRetry,onDiagnostic:event=>{
           // A settings edit during the request applies to future work. It must
           // not append another paid review/merge after a two-pass generation.
           usedVerification ||= event.details.purpose==='summary_verification';
@@ -1372,7 +1372,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     check();
     return summarize({startIndex:row.startIndex,endIndex:row.endIndex,batchSize:row.endIndex-row.startIndex+1,focus:row.focus,replaceBatchId:id,trigger,rebuildCandidate:Boolean(row.replacement&&row.status!=='saved'&&row.status!=='deleted')});
   }
-  async function retryBatch(id,{check:parentCheck}={}){
+  async function retryBatch(id,{check:parentCheck,explicit=true}={}){
     const check=continuationCheck(parentCheck);check();
     // A stale retry button can be clicked again before the busy UI paints.
     // Keep the current operation (and its progress) intact; never start a twin.
@@ -1396,7 +1396,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       const op=begin();try{const applied=await publishSummaryReplacement(row.replacement,op);check();await refresh({check});check();return {status:applied?'saved':'staged',requests:0};}finally{op.finish();}
     }
     check();
-    return summarize({startIndex:row.startIndex,endIndex:row.endIndex,batchSize:row.endIndex-row.startIndex+1,focus:row.focus,replaceBatchId:id,resume:true,trigger:row.trigger??'manual'});
+    return summarize({startIndex:row.startIndex,endIndex:row.endIndex,batchSize:row.endIndex-row.startIndex+1,focus:row.focus,replaceBatchId:id,resume:true,trigger:row.trigger??'manual',allowInvalidToolRetry:explicit});
   }
   async function retryIncompleteBatches(){
     await prepareSummaryChat();await refresh();const ids=state.batches.filter(b=>['failed','interrupted','queued'].includes(b.status)).map(b=>b.id);
@@ -1816,7 +1816,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       if(core.settings.focusMode==='ask_every'&&!force){setMessage('自动总结等待侧重点，可在手动总结中处理下一批');return;}
       op.finish();
       const pending=state.batches.find(batch=>batch.trigger==='auto'&&['failed','interrupted','queued'].includes(batch.status)&&!batch.replacement&&batch.startIndex===plan.nextStart&&batch.endIndex===plan.nextEnd);
-      if(pending)await retryBatch(pending.id,{check});
+      if(pending)await retryBatch(pending.id,{check,explicit:false});
       else await summarize({startIndex:plan.nextStart,endIndex:plan.nextEnd,batchSize:plan.batchSize,trigger:'auto'});
       check();
       autoHistoryAttempts=0;autoRetryAt=0;autoFailureCount=0;
