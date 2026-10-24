@@ -2,6 +2,7 @@ import { readViewState } from '../src/product-view-scheduling.js';
 import { esc,field } from '../src/product-settings-ui.js';
 import { CATEGORY_LABELS,recordDescription,readable,renderMemoryCard,memoryCards } from '../src/product-memory.js';
 import { MEMORY_CATEGORIES,pageSummaryBatches } from '../src/product-batches.js';
+import { hasNewerSavedCoverage } from '../src/product-auto-summary.js';
 import { parseModuleField } from '../src/product-custom-modules.js';
 
 // Display-only forecast: reserve persisted tasks verbatim, then partition only
@@ -22,6 +23,15 @@ export function paintPlannedBatchPreview(node,state,kind='memory'){
   const formal=isPersona?persona.batches??[]:state.batches??[];
   const candidate=isPersona&&['running','paused','failed'].includes(persona.manualPlan?.status)?persona.manualPlan.items??[]:[];
   const forecast=plannedBatchPreview([...formal,...candidate],{startFloor:(isPersona?persona.startFloor:state.autoStartFloor)??1,lastIndex:isPersona?persona.lastIndex:state.autoLastIndex,batchSize:(isPersona?settings.dynamicPersonaEvery:settings.autoSummaryEvery)??20,keepRecent:(isPersona?settings.dynamicPersonaKeepRecent:settings.autoKeepRecent)??0});
+  if(!isPersona){
+    // The real queue stops at its first unfinished batch. A later forecast is
+    // not a task and has no durable ID or delete action; do not number it as
+    // if work had continued past that barrier, or recreate a deleted task's
+    // appearance while this chat's automatic continuation is paused.
+    const startFloor=state.autoStartFloor??1;
+    const barrier=Math.min(Infinity,...formal.filter(row=>row.status!=='saved'&&row.status!=='deleted'&&Number.isSafeInteger(row.startIndex)&&Number.isSafeInteger(row.endIndex)&&row.endIndex>=startFloor&&!hasNewerSavedCoverage(row,formal)).map(row=>Math.max(startFloor,row.startIndex)));
+    forecast.items=state.summaryHold?[]:forecast.items.filter(row=>row.endIndex<barrier);
+  }
   const count=node.closest?.('[data-summary-memory-batches],[data-summary-persona-batches]')?.querySelector('[data-summary-batch-count],[data-persona-batch-count]');
   if(count&&forecast.known){const active=formal.filter(r=>r.status!=='deleted'),pending=forecast.items.length+[...active,...candidate].filter(r=>['queued','pending','running','failed','interrupted','staged'].includes(r.status)).length,unapplied=candidate.filter(r=>r.status==='saved').length;count.textContent=[`${active.length+candidate.length+forecast.items.length} 批`,pending?`${pending} 批待处理`:null,unapplied?`${unapplied} 批候选待应用`:null].filter(Boolean).join(' · ');}
   const stamp=JSON.stringify([forecast,formal.map(r=>[r.startIndex,r.endIndex,r.status]),candidate.map(r=>[r.startIndex,r.endIndex,r.status])]);if(node.dataset.forecastStamp===stamp)return;node.dataset.forecastStamp=stamp;
