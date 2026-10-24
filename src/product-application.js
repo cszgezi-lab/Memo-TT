@@ -229,7 +229,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     else if(opening||followPending||following||state.stale)waiting('waiting','chat_loading');
     else if(!workspace?.isCurrent())waiting('blocked','no_chat');
     else if(autoRunning||autoTaskOwner)waiting('running','running');
-    else if(active)waiting('waiting','task_busy');
+    else if(active||currentMemoryMutation())waiting('waiting','task_busy');
     else if(host.document?.visibilityState==='hidden')waiting('waiting','hidden');
     else if(!apiConnectionReady('summary'))waiting('blocked','api_unconfigured');
     else if(autoHistoryAttempts>3&&!autoPending)waiting('blocked','history_unavailable');
@@ -1538,7 +1538,14 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       if(action==='restore'&&keep)operations[keep]=staged?'pending':'active';
     }
     assertCurrent(token);check();const mutation=beginMemoryMutation();
-    const applied=await trackedMemoryMutation(mutation,()=>core.updateMemoryControls({operations},{check,returnView:true}));check();
+    // Persist the pause with the same controls commit as withdrawal. Otherwise
+    // releasing the last manual barrier immediately buys the deleted range again.
+    // Reuse the existing chat-level hold; keep a prior explicit cutoff intact.
+    const firstStart=Math.min(...targets.map(b=>b.startIndex).filter(Number.isSafeInteger));
+    const hold=action==='delete'&&!state.summaryHold?{id:makeId('summary-delete-hold'),reason:'batch_deleted',endIndex:Math.max(-1,Math.min(Number.isSafeInteger(state.autoStartFloor)?state.autoStartFloor:firstStart,Number.isFinite(firstStart)?firstStart:state.autoStartFloor??1)-1)}:null;
+    const applied=await trackedMemoryMutation(mutation,()=>core.updateMemoryControls({operations,...(hold?{automation:{summaryHold:hold}}:{})},{check,returnView:'deferred'}));
+    if(hold)state.summaryHold=hold;
+    check();
     await trackedMemoryMutation(mutation,()=>workspace.update('summary-batches',list=>list.map(row=>selected.includes(row.id)?{...row,status:action==='delete'?'deleted':restorableCandidate(row)?'queued':'saved',...(action==='restore'&&restorableCandidate(row)&&!row.replacementReady?{freshStart:true}:{}),savedOperationId:savedBatchOperation(row),operationId:action==='restore'?(savedBatchOperation(row)??row.operationId):row.operationId}:row),[],{check}));check();
     await refresh({check,view:applied?.memoryView});check();setMessage(action==='delete'?cascadedCount>0?`已撤下 ${directCount} 批（另有 ${cascadedCount} 批因人设连续性自动撤下）；已应用记忆可恢复，未应用候选不会进入正式记忆；聊天原文未改变`:`已撤下 ${targets.length} 批；已应用记忆可恢复，未应用候选不会进入正式记忆；聊天原文未改变`:`已恢复 ${targets.length} 批`);
     await runtimeLog.record({task:'summary',phase:'commit',level:'success',details:{reason:action==='delete'?'summary_batches_deleted':'summary_batches_restored',startIndex:Math.min(...targets.map(b=>b.startIndex)),endIndex:Math.max(...targets.map(b=>b.endIndex)),beforeBatches:rows.filter(b=>b.status!=='deleted').length,afterBatches:state.batches.filter(b=>b.status!=='deleted').length,modelRequested:false}});
@@ -1734,6 +1741,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     await workspace.write('auto-progress',{startFloor:floor});state.autoStartFloor=floor;notify();
   }
   async function setAutomatic(enabledNow){
+    if(enabledNow&&currentMemoryMutation())await refresh();
     if(enabledNow&&active)throw new Error('请等当前任务结束后启用自动总结');
     if(enabledNow&&state.summaryHold){await core.updateMemoryControls({automation:{summaryHold:null}});state.summaryHold=null;}
     if(enabledNow){automaticPaused=false;autoHistoryAttempts=0;autoRetryAt=0;autoFailureCount=0;}
@@ -1772,12 +1780,12 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   function unfinishedManualSummary(){return state.batches.some(batch=>['queued','running','failed','interrupted'].includes(batch.status)&&batch.trigger!=='auto'&&!hasNewerSavedCoverage(batch,state.batches));}
   function wakeAutomaticSummary(){
-    if(!autoPending||autoTimer!==null||autoTask||active||opening||disposed||followPending||following||state.stale||automaticPaused||state.summaryHold||unfinishedManualSummary()||!enabled||!core.settings.autoSummaryEnabled||!apiConnectionReady('summary')||host.document?.visibilityState==='hidden'||!workspace?.isCurrent())return;
+    if(!autoPending||autoTimer!==null||autoTask||active||opening||disposed||followPending||following||state.stale||automaticPaused||state.summaryHold||currentMemoryMutation()||unfinishedManualSummary()||!enabled||!core.settings.autoSummaryEnabled||!apiConnectionReady('summary')||host.document?.visibilityState==='hidden'||!workspace?.isCurrent())return;
     const token=epoch,version=cancelVersion;
     autoTimer=setTimeout(()=>{
       autoTimer=null;
       if(token!==epoch||version!==cancelVersion||disposed){autoPending=false;return;}
-      if(active||opening||followPending||following||state.stale||unfinishedManualSummary())return;
+      if(active||opening||followPending||following||state.stale||currentMemoryMutation()||state.summaryHold||unfinishedManualSummary())return;
       autoPending=false;
       const owner={token,version};autoTaskOwner=owner;
       const task=(async()=>{await syncModulesQuietly();if(autoTaskOwner===owner&&token===epoch&&version===cancelVersion&&!disposed)await autoSummary({owner});})()
@@ -1787,6 +1795,10 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     },Math.max(0,autoRetryAt-Date.now()));
   }
   async function autoSummary({force=false,owner={token:epoch,version:cancelVersion}}={}) {
+    // A canceled native pointer may still commit later. Its destructive guard
+    // survives settlement until a full reread reconciles the actual controls.
+    // Background wakes cannot use the stale in-memory scheduling snapshot.
+    if(currentMemoryMutation()){if(!force)return;await refresh();}
     if (active || followPending || following || state.stale || (!force&&(automaticPaused||state.summaryHold||!core.settings.autoSummaryEnabled||!apiConnectionReady('summary'))) || !workspace?.isCurrent()) return;
     if(force&&state.summaryHold){await core.updateMemoryControls({automation:{summaryHold:null}});state.summaryHold=null;}
     if(unfinishedManualSummary()){if(force)summaryFeedback('warning','手动计划尚未完成；请在本页“总结批次”重试或删除所选候选后再继续自动总结。','auto');return;}

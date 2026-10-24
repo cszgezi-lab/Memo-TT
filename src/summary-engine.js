@@ -184,6 +184,9 @@ function modelInvoker(model,{armor=null,preferBuffered=false}={}) {
       payload=applySummaryArmor(payload,armor);
       const readings=[...(envelope.sourceMessages??[]),...(envelope.bridgeMessages??[])].map(m=>m._reading).filter(Boolean);
       Object.defineProperty(payload,'_outputContract',{value:envelope.extractionContext?.outputContract});
+      // Report the same filtered source that is actually sent, not the frozen
+      // original retained locally for validation and restart identity.
+      Object.defineProperty(payload,'_sourceInputUnits',{value:estimateUnits(JSON.stringify(envelope.sourceMessages??[]))});
       if(readings.length)Object.defineProperty(payload,'_readingReport',{value:narrativeCounters(readings)});
       return payload;
     };
@@ -728,7 +731,8 @@ export class SummaryEngine {
         if(units>requestLimit)throw new ShiyiError('本次模型输入超过设置的输入预算；已返回结果保留，尚未发送该请求','INPUT_BUDGET_EXCEEDED',{...baseDetails,reason:'input_budget_exceeded',stage:'prepare',inputLimit:requestLimit,inputUnits:units});
         const wireContract=providerPayload?._outputContract??request.extractionContext?.outputContract;
         if(providerPayload?._readingReport)emit('reading',providerPayload._readingReport,providerPayload._readingReport.readingFallbacks?'warning':'info');
-        emit('request',{...baseDetails,summaryStage:request.summaryStage,modelRole:request.summaryRole??'summary',streaming:providerPayload?.stream===true,sourceInputUnits:estimateUnits(JSON.stringify(request.sourceMessages??[])),historyInputUnits:estimateUnits(JSON.stringify(request.relevantRecords??{})),schemaInputUnits:estimateUnits(JSON.stringify(wireContract??request.outputContract??{})),bridgeInputUnits:estimateUnits(JSON.stringify(request.bridgeMessages??[])),inputUnits:units,maxTokens:providerPayload?.max_tokens??0,recoveryCalls});
+        const serializedProvider=providerPayload?JSON.stringify(providerPayload):null;
+        emit('request',{...baseDetails,...(serializedProvider===null?{}:{requestChars:serializedProvider.length,requestBytes:new TextEncoder().encode(serializedProvider).length}),summaryStage:request.summaryStage,modelRole:request.summaryRole??'summary',streaming:providerPayload?.stream===true,sourceInputUnits:providerPayload?._sourceInputUnits??estimateUnits(JSON.stringify(request.sourceMessages??[])),historyInputUnits:estimateUnits(JSON.stringify(request.relevantRecords??{})),schemaInputUnits:estimateUnits(JSON.stringify(wireContract??request.outputContract??{})),bridgeInputUnits:estimateUnits(JSON.stringify(request.bridgeMessages??[])),inputUnits:units,maxTokens:providerPayload?.max_tokens??0,recoveryCalls});
         const started=this.now();state.requests++;childCalls++;
         try{
           try{return await model(request,{signal,requestId:baseDetails.requestId,purpose,bypassForeground:true});}

@@ -3,7 +3,7 @@
   "display_name": "Memo",
   "author": "Shiyi Memory",
   "description": "Memo：独立聊天记忆、动态人设与召回。",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "homePage": "https://github.com/cszgezi-lab/Memo-TT",
   "auto_update": true,
   "loading_order": 100,

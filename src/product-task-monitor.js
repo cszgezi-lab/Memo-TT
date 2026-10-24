@@ -3,7 +3,7 @@ const ROLES={summary:'主总结',assistant:'配置助手',dynamicPersona:'动态
 const WAIT={queue_foreground:'等待当前对话完成',queue_busy:'等待前一个请求结束',queue_cooldown:'等待接口恢复',queue_rpm:'等待接口频率限制解除'};
 const AUTOMATIC={
  progress_unknown:'尚未读取聊天楼数，可到总结页检查进度。',history_unavailable:'聊天原文仍不可读，已停止本轮重读；等待下一次回复完成或回到前台后再检查。',
- disabled:'自动总结未开启。',plugin_paused:'拾忆已暂停，开启记忆功能后继续。',no_chat:'打开聊天后检查自动总结。',chat_loading:'正在读取当前聊天。',task_busy:'等待当前任务结束。',manual_plan:'有未完成的手动总结，请到总结页继续、删除或放弃对应批次。',summary_hold:'手动覆盖后已暂停自动接续；需要时在总结页明确开启自动总结。',foreground:'等待当前对话完成。',hidden:'页面隐藏时暂停自动总结。',api_unconfigured:'请先保存主总结模型连接。',retry_wait:'上次未完成，正在等待再次尝试。',retry_exhausted:'自动重试已暂停，请到总结页查看失败批次并重试。',focus_required:'当前设置要求每批填写侧重点，请到手动总结处理下一批。',not_enough_floors:'等待聊天楼数达到下一批要求。',pending:'等待下一次聊天更新时检查。',ready:'已满足下一批总结条件。',running:'正在自动总结。'
+ disabled:'自动总结未开启。',plugin_paused:'拾忆已暂停，开启记忆功能后继续。',no_chat:'打开聊天后检查自动总结。',chat_loading:'正在读取当前聊天。',task_busy:'等待当前任务结束。',manual_plan:'有未完成的手动总结，请到总结页继续、删除或放弃对应批次。',summary_hold:'自动接续已暂停；需要时在总结页明确开启自动总结。',foreground:'等待当前对话完成。',hidden:'页面隐藏时暂停自动总结。',api_unconfigured:'请先保存主总结模型连接。',retry_wait:'上次未完成，正在等待再次尝试。',retry_exhausted:'自动重试已暂停，请到总结页查看失败批次并重试。',focus_required:'当前设置要求每批填写侧重点，请到手动总结处理下一批。',not_enough_floors:'等待聊天楼数达到下一批要求。',pending:'等待下一次聊天更新时检查。',ready:'已满足下一批总结条件。',running:'正在自动总结。'
 };
 const number=value=>Number.isSafeInteger(value)&&value>=0?value:null;
 const range=(start,end)=>number(start)!==null&&number(end)!==null&&end>=start?`${start}–${end} 楼`:'';

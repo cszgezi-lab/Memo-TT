@@ -1,4 +1,4 @@
-# Memo · TT版 1.0.4
+# Memo · TT版 1.0.5
 
 安装地址：https://github.com/cszgezi-lab/Memo-TT
 

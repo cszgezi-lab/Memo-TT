@@ -411,7 +411,7 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
        const count=node.querySelector?.('[data-summary-batch-count]');
        if(count)count.textContent=`${(summaryBatches).filter(batch=>batch.status!=='deleted').length} 批${pending.length?` · ${pending.length} 批未完成`:''}`;
      }
-     if(row.kind==='memory'&&s.summaryHold){node.querySelector('[data-summary-state]').textContent='自动接续已暂停';node.querySelector('[data-summary-next]').textContent='已按所选终点撤下后续记录；点击“总结下一批”处理一批，或在自动总结中启用接续。';}
+     if(row.kind==='memory'&&s.summaryHold){node.querySelector('[data-summary-state]').textContent='自动接续已暂停';node.querySelector('[data-summary-next]').textContent=s.summaryHold.reason==='batch_deleted'?'已删除所选批次；需要时手动总结或明确启用自动接续。':'已按所选终点撤下后续记录；点击“总结下一批”处理一批，或在自动总结中启用接续。';}
      const pause=node.querySelector?.('[data-summary-pause]');
      if(pause){pause.hidden=row.kind!=='memory'||!settings.autoSummaryEnabled;if(row.kind==='memory')pause.textContent='暂停自动';}
      if(row.kind==='persona'){
