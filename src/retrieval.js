@@ -1,6 +1,6 @@
 import { ShiyiError } from './errors.js';
 import { sourceRecallExcerpt, sourceQuote, sourceEvidenceQuery } from './source-recall-evidence.js';
-import { abortError, clone, estimateUnits, normalizeText, stableStringify, throwIfAborted } from './utils.js';
+import { abortError, clone, estimateUnits, normalizeText, stableStringify, throwIfAborted, yieldLocalWork } from './utils.js';
 
 const CJK_RE = /[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/u;
 const WORD_RE = /[\p{L}\p{N}_-]+/gu;
@@ -8,6 +8,10 @@ const WORD_RE = /[\p{L}\p{N}_-]+/gu;
 export function tokenizeChinese(value) {
   return [...chineseTokens(value)];
 }
+
+// Large summary queries can consume the same tokens without allocating an
+// intermediate array of every unigram, bigram and trigram occurrence.
+export function* iterateChineseTokens(value) { yield* chineseTokens(value); }
 
 function* chineseTokens(value) {
   const text = normalizeText(value).toLocaleLowerCase();
@@ -59,16 +63,28 @@ export class LocalBM25Index {
     this.entityPostings = new Map();
     this.totalLength = 0;
     this._nextIndex = 0;
+    this.compact = false;
+    this._revision = 0;
+    this._queryCache = [];
     for (const record of records) this.add(record);
   }
 
   add(record) {
+    this._invalidateQueries();
     const id = candidateId(record, this._nextIndex++);
     if (this.documents.has(id)) this.remove(id);
     // BM25 needs counts and document length, never the expanded occurrence
     // array. Full source floors can produce millions of repeated CJK n-grams.
     const frequencies = new Map();let length=0;
-    for(const token of chineseTokens(localTextOf(record))){frequencies.set(token,(frequencies.get(token)??0)+1);length++;}
+    for(const token of chineseTokens(localTextOf(record))){
+      length++;
+      if (!this.compact && this.totalLength + length >= 131072) {
+        this.compact = true; this.docFrequency.clear(); this.postings.clear();
+        for (const item of this.documents.values()) item.frequencies = null;
+        frequencies.clear();
+      }
+      if(!this.compact)frequencies.set(token,(frequencies.get(token)??0)+1);
+    }
     for (const token of frequencies.keys()) {
       this.docFrequency.set(token, (this.docFrequency.get(token) ?? 0) + 1);
       if (!this.postings.has(token)) this.postings.set(token, new Set());
@@ -81,13 +97,18 @@ export class LocalBM25Index {
     }
     this.documents.set(id, document);
     this.totalLength += length;
+    // A full n-gram Map and Set per historical source retained hundreds of MB
+    // on long chats. Keep source/length exactly; count only requested terms at
+    // query time once the disposable index exceeds this small working set.
+    if (this.compact) document.frequencies = null;
     return id;
   }
 
   remove(id) {
     const document = this.documents.get(id);
     if (!document) return false;
-    for (const token of document.frequencies.keys()) {
+    this._invalidateQueries();
+    for (const token of document.frequencies?.keys() ?? []) {
       const count = (this.docFrequency.get(token) ?? 1) - 1;
       if (count > 0) this.docFrequency.set(token, count); else this.docFrequency.delete(token);
       this.postings.get(token)?.delete(id);
@@ -115,6 +136,7 @@ export class LocalBM25Index {
       this.add(record);
       return previous ? 'reindexed' : 'added';
     }
+    this._invalidateQueries();
     for (const entity of previous.entities) {
       this.entityPostings.get(entity)?.delete(id);
       if (!this.entityPostings.get(entity)?.size) this.entityPostings.delete(entity);
@@ -129,6 +151,11 @@ export class LocalBM25Index {
   }
 
   search(query, { limit = 20, entityIds = [], filter = null } = {}) {
+    if (this.compact) {
+      const work = this._collectQuery(query);
+      let step; do { step = work.next(); } while (!step.done);
+      return this._searchQuery(step.value, {limit, entityIds, filter});
+    }
     const queryText = normalizeText(query);
     const queryTokens = tokenizeChinese(queryText);
     const uniqueQueryTokens = [...new Set(queryTokens)];
@@ -168,6 +195,114 @@ export class LocalBM25Index {
     candidates.sort((a, b) => b.score - a.score || String(a.id).localeCompare(String(b.id)));
     // Only copy returned records, not the entire matching corpus.
     return candidates.slice(0, Math.max(0, limit)).map(candidate => ({ ...candidate, record: clone(candidate.record) }));
+  }
+
+  _invalidateQueries() {
+    this._revision++;
+    this._queryCache = [];
+    if (this.compact) this.docFrequency.clear();
+  }
+
+  *_collectQuery(query) {
+    const revision = this._revision, text = normalizeText(query);
+    const cached = this._queryCache.find(item => item.text === text);
+    if (cached) { this.docFrequency = cached.df; return cached; }
+    const wanted = new Set(); let work = 0;
+    for (const token of chineseTokens(text)) {
+      wanted.add(token); if (++work % 2048 === 0) yield;
+    }
+    const tokens = [...wanted], positions = new Map(tokens.map((token,i) => [token,i]));
+    const df = new Map(), rows = new Map(); let entries = 0;
+    for (const document of this.documents.values()) {
+      const frequencies = new Map();
+      for (const token of chineseTokens(localTextOf(document.record))) {
+        if (wanted.has(token)) frequencies.set(token, (frequencies.get(token) ?? 0) + 1);
+        if (++work % 2048 === 0) yield;
+      }
+      if (frequencies.size) {
+        // Store query ordinal/count pairs, not another string-keyed Map for
+        // every source. A very long query must not rebuild the discarded index.
+        const pairs = [...frequencies].map(([token,count]) => [positions.get(token),count]).sort((a,b)=>a[0]-b[0]);
+        rows.set(document.id, Uint32Array.from(pairs.flat())); entries += frequencies.size;
+        for (const token of frequencies.keys()) df.set(token, (df.get(token) ?? 0) + 1);
+      }
+      yield;
+    }
+    if (revision !== this._revision) throw abortError('recall index changed');
+    const snapshot = {text, tokens, df, rows, revision};
+    // Large queries remain operation-local; never retain a second corpus-sized
+    // index. Ordinary main/focus queries share at most two small snapshots.
+    if (tokens.length <= 4096 && entries <= 32768) {
+      this._queryCache = [snapshot, ...this._queryCache].slice(0, 2);
+      this.docFrequency = df;
+    } else {
+      this.docFrequency = new Map();
+    }
+    return snapshot;
+  }
+
+  async prepareSearch(query, {signal} = {}) {
+    throwIfAborted(signal);
+    if (!this.compact) return {search: options => this.search(query, options), docFrequency: this.docFrequency};
+    const snapshot = await this._drainQuery(this._collectQuery(query),signal);
+    return {search: options => this._searchQuery(snapshot, options),
+      searchAsync: options => this._drainQuery(this._scoreQuery(snapshot,options),signal), docFrequency: snapshot.df};
+  }
+
+  async _drainQuery(work,signal) {
+    throwIfAborted(signal);
+    let at = globalThis.performance?.now?.() ?? Date.now();
+    let step = work.next();
+    while (!step.done) {
+      throwIfAborted(signal);
+      const now = globalThis.performance?.now?.() ?? Date.now();
+      if (now - at >= 8) {
+        await yieldLocalWork({prioritized:false}); throwIfAborted(signal);
+        at = globalThis.performance?.now?.() ?? Date.now();
+      }
+      step = work.next();
+    }
+    throwIfAborted(signal);
+    return step.value;
+  }
+
+  _searchQuery(snapshot, {limit = 20, entityIds = [], filter = null} = {}) {
+    const work=this._scoreQuery(snapshot,{limit,entityIds,filter});let step;
+    do {step=work.next();}while(!step.done);return step.value;
+  }
+
+  *_scoreQuery(snapshot, {limit = 20, entityIds = [], filter = null} = {}) {
+    if (snapshot.revision !== this._revision) throw abortError('recall index changed');
+    const wantedEntities = new Set((Array.isArray(entityIds) ? entityIds : []).map(value => normalizeText(value).toLocaleLowerCase()));
+    const documentCount = this.documents.size || 1, averageLength = this.totalLength / documentCount || 1;
+    const matching = new Set(snapshot.rows.keys()), candidates = [];
+    for (const entity of wantedEntities) for (const id of this.entityPostings.get(entity) ?? []) matching.add(id);
+    let work=0;
+    for (const id of matching) {
+      if (snapshot.revision !== this._revision) throw abortError('recall index changed');
+      const document = this.documents.get(id);
+      if (typeof filter === 'function' && !filter(document.record)) continue;
+      const frequencies = snapshot.rows.get(id); let score = 0; const termMatches = [];
+      for (let i=0; i<(frequencies?.length ?? 0); i+=2) {
+        const token = snapshot.tokens[frequencies[i]], tf = frequencies[i+1];
+        const df = snapshot.df.get(token) ?? 0;
+        const idf = Math.log(1 + ((documentCount - df + 0.5) / (df + 0.5)));
+        const denominator = tf + this.k1 * (1 - this.b + this.b * (document.length / averageLength));
+        score += idf * ((tf * (this.k1 + 1)) / denominator); termMatches.push(token);
+        if(++work%2048===0)yield;
+      }
+      const exactEntities = [...wantedEntities].filter(entity => document.entities.includes(entity));
+      if (exactEntities.length) score += exactEntities.length * 3;
+      if (score <= 0) continue;
+      candidates.push({id:document.id, score, record:document.record,
+        channels:[exactEntities.length ? 'entity_exact' : null, termMatches.length ? 'bm25_cjk' : null].filter(Boolean), termMatches, exactEntities});
+      candidates.sort((a,b) => b.score-a.score || String(a.id).localeCompare(String(b.id)));
+      if (candidates.length > Math.max(0,limit)) candidates.pop();
+      yield;
+    }
+    if (snapshot.revision !== this._revision) throw abortError('recall index changed');
+    candidates.sort((a,b) => b.score-a.score || String(a.id).localeCompare(String(b.id)));
+    return candidates.slice(0,Math.max(0,limit)).map(candidate => ({...candidate,record:clone(candidate.record)}));
   }
 }
 
@@ -447,11 +582,13 @@ export async function retrieveMemories({
   throwIfAborted(signal);
   const startedAt = monotonicNow();
   const keywordFilter=r=>r.keywordEnabled!==false&&(!filter||filter(r));
-  const local = index.search(query, { limit: Math.max(limit, rerankOptions.maxCandidates ?? limit), entityIds, filter:keywordFilter });
+  const mainSession = index.compact ? await index.prepareSearch(query,{signal}) : null;
+  const mainSearch = options=>mainSession ? mainSession.searchAsync(options) : index.search(query,options);
+  const local = mainSession ? await mainSearch({limit:Math.max(limit,rerankOptions.maxCandidates??limit),entityIds,filter:keywordFilter}) : mainSearch({limit:Math.max(limit,rerankOptions.maxCandidates??limit),entityIds,filter:keywordFilter});
   const lanes=tagLanes.slice(0,4).filter(l=>typeof l.tag==='string'&&l.tag.length>=2&&Number.isSafeInteger(l.limit)&&l.limit>0).map(l=>({...l,limit:Math.min(l.limit,20)}));
-  const tagged=lanes.map(lane=>({...lane,candidates:index.search(query,{limit:lane.limit,entityIds,filter:r=>keywordFilter(r)&&Array.isArray(r.tags)&&r.tags.includes(lane.tag)})}));
+  const tagged=[];for(const lane of lanes){const pending=mainSearch({limit:lane.limit,entityIds,filter:r=>keywordFilter(r)&&Array.isArray(r.tags)&&r.tags.includes(lane.tag)});tagged.push({...lane,candidates:mainSession?await pending:pending});}
   const categories=categoryLanes.slice(0,12).filter(l=>typeof l.category==='string'&&Number.isSafeInteger(l.limit)&&l.limit>0).map(l=>({...l,limit:Math.min(l.limit,20)}));
-  const classified=categories.map(lane=>({...lane,candidates:index.search(query,{limit:lane.limit,entityIds,filter:r=>keywordFilter(r)&&r.category===lane.category})}));
+  const classified=[];for(const lane of categories){const pending=mainSearch({limit:lane.limit,entityIds,filter:r=>keywordFilter(r)&&r.category===lane.category});classified.push({...lane,candidates:mainSession?await pending:pending});}
   const capacity = Math.max(1, Math.min(rerankOptions.maxCandidates ?? limit, limit));
   const maxFocusCapacity = Math.floor(capacity / 2);
   const distinctFocus = maxFocusCapacity > 0 && typeof focus?.query === 'string' && focus.query.trim() && normalizeText(focus.query) !== normalizeText(query);
@@ -459,9 +596,11 @@ export async function retrieveMemories({
   // question. Reuse the same index and filters; reserve at most half of the
   // existing pool, leaving the other half available for contextual references.
   // Corpus frequency keeps ubiquitous pronouns from reserving unrelated rows.
-  const specificTerm = term => [...term].length >= 2 && (index.docFrequency?.get(term) ?? Infinity) <= Math.max(2, (index.documents?.size ?? 0) / 5);
+  const focusSearch = distinctFocus && index.compact ? await index.prepareSearch(focus.query,{signal}) : {search:options=>index.search(focus.query,options),docFrequency:index.docFrequency};
+  const specificTerm = term => [...term].length >= 2 && (focusSearch.docFrequency?.get(term) ?? Infinity) <= Math.max(2, (index.documents?.size ?? 0) / 5);
   const focusSpecific = candidate => candidate.exactEntities?.length || (candidate.termMatches ?? []).some(specificTerm);
-  const focusLocal = distinctFocus ? index.search(focus.query, { limit: Math.max(limit, rerankOptions.maxCandidates ?? limit), entityIds: focus.entityIds ?? [], filter: keywordFilter }).filter(focusSpecific) : [];
+  const focusOptions={limit:Math.max(limit,rerankOptions.maxCandidates??limit),entityIds:focus?.entityIds??[],filter:keywordFilter};
+  const focusLocal = distinctFocus ? (focusSearch.searchAsync ? await focusSearch.searchAsync(focusOptions) : focusSearch.search(focusOptions)).filter(focusSpecific) : [];
   // A rare two-character reference can still be a pronoun. One short match
   // may keep one candidate, but cannot claim half the pool on rarity alone.
   const matchedPositions = new Set(), focusText = normalizeText(focus?.query).toLocaleLowerCase();
@@ -470,7 +609,7 @@ export async function retrieveMemories({
     if (at >= 0) for (let i = at; i < at + term.length; i++) matchedPositions.add(i);
   }
   const focusCapacity = focusLocal.some(c => c.exactEntities?.length) || matchedPositions.size >= 4 ? maxFocusCapacity : Math.min(1, maxFocusCapacity);
-  const focusCategories = focusLocal.length ? categories.map(lane => ({...lane, candidates: index.search(focus.query, {limit: lane.limit, entityIds: focus.entityIds ?? [], filter: r => keywordFilter(r) && r.category === lane.category}).filter(focusSpecific)})) : [];
+  const focusCategories=[];if(focusLocal.length)for(const lane of categories){const options={limit:lane.limit,entityIds:focus.entityIds??[],filter:r=>keywordFilter(r)&&r.category===lane.category};const hits=focusSearch.searchAsync?await focusSearch.searchAsync(options):focusSearch.search(options);focusCategories.push({...lane,candidates:hits.filter(focusSpecific)});}
   const focusById = new Map(focusLocal.map(c => [String(c.id), c]));
   for (const lane of focusCategories) for (const candidate of lane.candidates) if (!focusById.has(String(candidate.id))) focusById.set(String(candidate.id), candidate);
   const focusRanks = new Map(focusLocal.map((c, i) => [String(c.id), i + 1]));

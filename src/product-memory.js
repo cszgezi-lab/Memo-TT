@@ -3,7 +3,7 @@ import { estimateUnits, clone, stableStringify, throwIfAborted, yieldLocalWork }
 import { buildDictionary, dictionaryQuery,enrichRetrievalMetadata } from './product-dictionary.js';
 import { fullSearchText, narrativeText, recordTitle, sourceFloors, sourceLabel, stateLabel, awarenessLabel, viaLabel, relationLabel, epistemicLabel, fieldLabel,scopeLabel } from './product-narrative.js';
 import { hasStoryTime, storyDateOf } from './temporal.js';
-import { coveredRecallRecord, recallSelectionReason, nameOnlyRecallCandidates, coverLocalQuestionParts, recallActorFilter } from './product-recall-packing.js';
+import { coveredRecallRecord, recallSelectionReason, nameOnlyRecallCandidates, coverLocalQuestionParts, coverLocalQuestionPartsAsync, recallActorFilter } from './product-recall-packing.js';
 import { factValue, factImportance, fullCharacterGroups, currentAttributeRecords, awarenessSubjectLabel, characterRecordSubjects, explicitSubjectNames, PERSON_RECORD_CATEGORIES, factKey } from './product-person-profiles.js';
 import {foldName} from './persona-identity.js';
 import {markMemoryStates,memoryHistoryIntent} from './memory-current-state.js';
@@ -885,7 +885,8 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   result.trace.timings.prepareMs=retrievalStarted-startedAt;
   let candidates = [...result.candidates];
   const seen = new Set(); candidates = candidates.filter(c => !seen.has(c.id) && seen.add(c.id));
-  candidates=coverLocalQuestionParts(candidates,focusQuery,index,{filter,dictionary:lexicon,limit:settings.retrievalLimit,reranked:result.trace.rerank.status==='passed'});
+  const coverageOptions={filter,dictionary:lexicon,limit:settings.retrievalLimit,reranked:result.trace.rerank.status==='passed',signal};
+  candidates=index.compact ? await coverLocalQuestionPartsAsync(candidates,focusQuery,index,coverageOptions) : coverLocalQuestionParts(candidates,focusQuery,index,coverageOptions);
   // An uncorroborated vector hit must not pull another person's old scene
   // into a turn that explicitly names someone else. Keep local or reranked
   // evidence, and allow a directly named scene/location even across actors.

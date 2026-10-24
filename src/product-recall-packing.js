@@ -1,4 +1,4 @@
-import { stableStringify } from './utils.js';
+import { stableStringify, throwIfAborted } from './utils.js';
 import { sameFactForRecall } from './product-person-profiles.js';
 import { tokenizeChinese } from './retrieval.js';
 import { dictionaryQuery } from './product-dictionary.js';
@@ -184,6 +184,25 @@ export function recallSelectionReason(candidate) {
 // compete as one bag of words. Reuse the existing local index and candidate
 // pool, promoting at most one hit per question; no API calls or larger packet.
 export function coverLocalQuestionParts(candidates,query,index,{filter,dictionary,limit=8,reranked=false}={}){
+  const work=questionPartCoverage(candidates,query,index,{filter,dictionary,limit,reranked});
+  let step=work.next();
+  while(!step.done){step=work.next(index.search(step.value.query,step.value.options));}
+  return step.value;
+}
+
+export async function coverLocalQuestionPartsAsync(candidates,query,index,{signal,...options}={}){
+  throwIfAborted(signal);
+  const work=questionPartCoverage(candidates,query,index,options); let step=work.next();
+  while(!step.done){
+    const prepared=await index.prepareSearch(step.value.query,{signal});
+    throwIfAborted(signal);
+    const hits=prepared.searchAsync?await prepared.searchAsync(step.value.options):prepared.search(step.value.options);
+    step=work.next(hits);
+  }
+  throwIfAborted(signal); return step.value;
+}
+
+function* questionPartCoverage(candidates,query,index,{filter,dictionary,limit=8,reranked=false}={}){
   if(reranked||!index?.search||limit<2)return candidates;
   // A comma often joins a claim and its correction ("why cancelled, was it
   // stage fright?"). Splitting there can promote the disproved claim.
@@ -192,7 +211,8 @@ export function coverLocalQuestionParts(candidates,query,index,{filter,dictionar
   const byId=new Map(candidates.map(c=>[String(c.id),c])),selected=[],seen=new Set();
   for(const part of parts){
     const expanded=dictionary?dictionaryQuery(part,dictionary,{expandTopics:false}).query:part;
-    const hit=index.search(expanded,{limit:candidates.length,filter:r=>r.keywordEnabled!==false&&(!filter||filter(r))}).find(c=>byId.has(String(c.id))&&!seen.has(String(c.id)));
+    const results=yield {query:expanded,options:{limit:candidates.length,filter:r=>r.keywordEnabled!==false&&(!filter||filter(r))}};
+    const hit=results.find(c=>byId.has(String(c.id))&&!seen.has(String(c.id)));
     if(hit&&selected.length<Math.min(3,limit)){seen.add(String(hit.id));selected.push({...byId.get(String(hit.id)),queryPartCoverage:true});}
   }
   return selected.length>1?[...selected,...candidates.filter(c=>!seen.has(String(c.id)))]:candidates;

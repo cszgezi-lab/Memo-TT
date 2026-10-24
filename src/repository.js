@@ -734,7 +734,10 @@ export class MemoryRepository {
     // normal for new work and must not reread every historical native entry.
     const header=await this._loadScope(scope),verified=VERIFIED_SCOPE_READS.get(header);
     VERIFIED_SCOPE_READS.delete(header);
-    const snapshot=await projectScope(this,header,verified.chunks),p=snapshot.pointer;
+    // Receipt recovery consumes the effective projection and its pointer, not
+    // an additional deep copy of every immutable generation's audit history.
+    // Keep all chunk hashes and projection checks, including for absent work.
+    const snapshot=await projectScope(this,header,verified.chunks,{includeHistory:false}),p=snapshot.pointer;
     if(p.operationId!==operationId){
       for(const ref of snapshot.manifest?.chunks??[]){
         const c=verified.chunks.get(ref.key);

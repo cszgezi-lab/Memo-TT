@@ -429,15 +429,16 @@ export class SummaryEngine {
     this.requestLog = [];
   }
 
-  async _existingContext(scope, { sourceMessages = [], bridgeMessages = [], budgetUnits = Infinity, relevantRecords = null, authoritativeRecords = null } = {}) {
+  async _existingContext(scope, { sourceMessages = [], bridgeMessages = [], budgetUnits = Infinity, relevantRecords = null, authoritativeRecords = null, signal } = {}) {
     if (typeof this.repository.listRecords !== 'function') return { records: {}, authoritativeRecords: {}, ids: new Set(), selection: { usedUnits: 0, candidateCount: 0, omittedCount: 0 } };
     authoritativeRecords ??= await this.repository.listRecords(scope);
     const ids = contextIds(authoritativeRecords);
-    const selection = await selectSummaryContextAsync(relevantRecords ?? authoritativeRecords, [...sourceMessages,...bridgeMessages], {budgetUnits:Math.min(budgetUnits,6000),maxRecords:this.maxRelevantRecords});
+    const selection = await selectSummaryContextAsync(relevantRecords ?? authoritativeRecords, [...sourceMessages,...bridgeMessages], {budgetUnits:Math.min(budgetUnits,6000),maxRecords:this.maxRelevantRecords}, {signal});
     return { records: selection.records, authoritativeRecords, ids, selection };
   }
 
-  async _prepareRequest(child, batch, { relevantRecords = null, authoritativeRecords = null } = {}) {
+  async _prepareRequest(child, batch, { relevantRecords = null, authoritativeRecords = null, signal } = {}) {
+    throwIfAborted(signal);
     const focusForChild = focusGate(child.focusSpec);
     const wireFocusSpec = serializableFocusSpec(child.focusSpec);
     const effectiveRules = child.rules ?? child.focusSpec?.rules ?? child.focusSpec?.focusRules ?? null;
@@ -459,8 +460,8 @@ export class SummaryEngine {
     const configuredLimit = Math.min(declaredLimit, this.requestSafetyUnits ?? declaredLimit);
     const contentQuota = Math.max(0, configuredLimit - sourceUnits - bridgeUnits - focusRulesUnits - schemaUnits - 1500);
     const context = relevantRecords
-      ? await this._existingContext(child.scope, { sourceMessages: child.sourceMessages, bridgeMessages: child.bridgeMessages, budgetUnits: contentQuota, relevantRecords, authoritativeRecords })
-      : await this._existingContext(child.scope, { sourceMessages: child.sourceMessages, bridgeMessages: child.bridgeMessages, budgetUnits: contentQuota, authoritativeRecords });
+      ? await this._existingContext(child.scope, { sourceMessages: child.sourceMessages, bridgeMessages: child.bridgeMessages, budgetUnits: contentQuota, relevantRecords, authoritativeRecords, signal })
+      : await this._existingContext(child.scope, { sourceMessages: child.sourceMessages, bridgeMessages: child.bridgeMessages, budgetUnits: contentQuota, authoritativeRecords, signal });
     const committedRevision = typeof this.repository.getCommittedRevision === 'function' ? await this.repository.getCommittedRevision(child.scope) : child.expectedRevision;
     const budget = {
       limitUnits: configuredLimit,
@@ -634,7 +635,7 @@ export class SummaryEngine {
       frozen: frozenPlan?.requestPlan,
       checkpointPlan: checkpoint?.splitPlan,
       signal,
-      prepare: child => this._prepareRequest(child, batch, { relevantRecords, authoritativeRecords }),
+      prepare: child => this._prepareRequest(child, batch, { relevantRecords, authoritativeRecords, signal }),
     }) : splitSummaryBatch(batch, { maxInputUnits: this.maxSourceUnits ?? this.maxInputUnits });
     const splitPlan = children.map((child) => ({
       childIndex: child.childRange.childIndex,
@@ -804,7 +805,7 @@ export class SummaryEngine {
           throwIfAborted(signal);
           if(await this.repository.getCommittedRevision(child.scope)===initialContextRevision)firstContext=authoritativeRecords;
         }
-        const { request, context, configuredLimit } = await this._prepareRequest(child, batch, { relevantRecords,authoritativeRecords:firstContext });
+        const { request, context, configuredLimit } = await this._prepareRequest(child, batch, { relevantRecords,authoritativeRecords:firstContext, signal });
         this.requestLog.push({ operationId: child.operationId, parentOperationId: batch.operationId, childIndex, sourceIds: child.sourceMessages.map((message) => message.id) });
         baseDetails.inputLimit=configuredLimit;
         const resultBinding=sha256({sourceRevision:child.sourceRevision,scope:child.scope,rules:child.rules,focus:child.focusSpec,configVersion:child.configVersion});
