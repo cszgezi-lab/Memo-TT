@@ -162,10 +162,43 @@ function modelEnvelope(request) {
   // Keep the frozen preset locally for checkpoint identity, but transmit its
   // system prompt and writing rules once, not the entire library a second time.
   if(preset||request.extractionContext?.rules?.narrativeExtraction)value.extractionContext={...value.extractionContext,rules:request.extractionContext.rules.recordingRules};
+  if(request.kind==='ShiyiSummaryRequest'&&!request.summaryStage){
+    // Execution identity, revisions and planning counters are validated locally.
+    // The model needs the exact sources/records/rules, not a second ID list or
+    // the host's input-budget accounting. Only these two explicit levels are
+    // projected: a story record's scope/versions are never recursively deleted.
+    for(const key of ['scope','operationId','parentOperationId','expectedRevision'])delete value[key];
+    const localKeys=new Set(['scope','committedRevision','sourceRevision','configVersion','rulesVersion','focusVersion','budget','coverage']);
+    value.extractionContext=Object.fromEntries(Object.entries(value.extractionContext??{}).filter(([key])=>!localKeys.has(key)));
+  }
   return verificationEnvelope(value);
 }
 
 const FORMAT_RECOVERY_RULE='上次完整返回的正文未形成有效的总结 JSON。请依据同一完整原文和本次 outputContract 重新输出单个完整 JSON，不加解释或 Markdown，不省略必需区块和逐楼摘要，不猜测事实或来源。';
+
+// Numeric-only accounting of the actual dispatch payload. Section sizes are
+// characters inside message content, not tokens. HTTP escaping is separate;
+// neither source text nor preset words are retained by the diagnostic.
+function summarySizeDetails(payload,serialized){
+  if(!payload?.messages?.every(m=>typeof m.content==='string'))return {};
+  const messageContentChars=payload.messages.reduce((n,m)=>n+m.content.length,0);
+  const toolSchemaChars=payload.tools?JSON.stringify(payload.tools).length:0;
+  const result={messageContentChars,toolSchemaChars,transportOverheadChars:serialized.length-messageContentChars-toolSchemaChars};
+  const user=payload.messages.find(m=>m.role==='user');let envelope;
+  try{envelope=JSON.parse(user?.content);}catch{return result;}
+  if(!Array.isArray(envelope?.sourceMessages))return result;
+  const chars=value=>JSON.stringify(value).length;
+  const armorInputChars=payload._armorInputChars??0;
+  const baseSystemChars=payload.messages.filter(m=>m.role==='system').reduce((n,m)=>n+m.content.length,0)-armorInputChars;
+  Object.assign(result,{sentSourceTextChars:envelope.sourceMessages.reduce((n,m)=>n+(typeof m.text==='string'?m.text.length:0),0),
+    sourceSectionChars:chars(envelope.sourceMessages),bridgeSectionChars:chars(envelope.bridgeMessages??[]),
+    historySectionChars:chars(envelope.relevantRecords??{}),schemaSectionChars:chars(envelope.extractionContext?.outputContract??envelope.outputContract??{}),
+    baseSystemChars,armorInputChars});
+  result.otherPromptChars=messageContentChars-result.sourceSectionChars-result.bridgeSectionChars-result.historySectionChars-result.schemaSectionChars-baseSystemChars-armorInputChars;
+  // Unknown repair envelopes can omit sections; never publish misleading sums.
+  if(result.otherPromptChars<0)return {messageContentChars,toolSchemaChars,transportOverheadChars:result.transportOverheadChars};
+  return result;
+}
 
 function modelInvoker(model,{armor=null,preferBuffered=false,preferStreaming=false}={}) {
   if (typeof model === 'function') return model;
@@ -189,7 +222,9 @@ function modelInvoker(model,{armor=null,preferBuffered=false,preferStreaming=fal
         { role: 'user', content: JSON.stringify(envelope) },
       ],
       };
+      const unarmoredChars=payload.messages.reduce((n,m)=>n+m.content.length,0);
       payload=applySummaryArmor(payload,armor);
+      Object.defineProperty(payload,'_armorInputChars',{value:payload.messages.reduce((n,m)=>n+m.content.length,0)-unarmoredChars});
       const readings=[...(envelope.sourceMessages??[]),...(envelope.bridgeMessages??[])].map(m=>m._reading).filter(Boolean);
       Object.defineProperty(payload,'_outputContract',{value:envelope.extractionContext?.outputContract});
       // Report the same filtered source that is actually sent, not the frozen
@@ -742,7 +777,7 @@ export class SummaryEngine {
         const wireContract=providerPayload?._outputContract??request.extractionContext?.outputContract;
         if(providerPayload?._readingReport)emit('reading',providerPayload._readingReport,providerPayload._readingReport.readingFallbacks?'warning':'info');
         const serializedProvider=providerPayload?JSON.stringify(providerPayload):null;
-        emit('request',{...baseDetails,...(serializedProvider===null?{}:{requestChars:serializedProvider.length,requestBytes:new TextEncoder().encode(serializedProvider).length}),summaryStage:request.summaryStage,modelRole:request.summaryRole??'summary',streaming:providerPayload?.stream===true,sourceInputUnits:providerPayload?._sourceInputUnits??estimateUnits(JSON.stringify(request.sourceMessages??[])),historyInputUnits:estimateUnits(JSON.stringify(request.relevantRecords??{})),schemaInputUnits:estimateUnits(JSON.stringify(wireContract??request.outputContract??{})),bridgeInputUnits:estimateUnits(JSON.stringify(request.bridgeMessages??[])),inputUnits:units,maxTokens:providerPayload?.max_tokens??0,recoveryCalls});
+        emit('request',{...baseDetails,...(serializedProvider===null?{}:{requestChars:serializedProvider.length,requestBytes:new TextEncoder().encode(serializedProvider).length,...summarySizeDetails(providerPayload,serializedProvider)}),summaryStage:request.summaryStage,modelRole:request.summaryRole??'summary',streaming:providerPayload?.stream===true,sourceInputUnits:providerPayload?._sourceInputUnits??estimateUnits(JSON.stringify(request.sourceMessages??[])),historyInputUnits:estimateUnits(JSON.stringify(request.relevantRecords??{})),schemaInputUnits:estimateUnits(JSON.stringify(wireContract??request.outputContract??{})),bridgeInputUnits:estimateUnits(JSON.stringify(request.bridgeMessages??[])),inputUnits:units,maxTokens:providerPayload?.max_tokens??0,recoveryCalls});
         const started=this.now();state.requests++;childCalls++;
         try{
           try{return await model(request,{signal,requestId:baseDetails.requestId,purpose,bypassForeground:true});}

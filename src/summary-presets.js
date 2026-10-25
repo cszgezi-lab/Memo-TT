@@ -86,5 +86,5 @@ export function summaryPresetPreview(preset) {
   const preview={system:unchanged?moduleSummaryInstructions:`${PRESET_TRANSPORT_GUARD}\n${preset.instructions}`,outputContract:applySummaryPreset(moduleSummaryContract(SUMMARY_OUTPUT_CONTRACT),unchanged?null:preset)};
   if(!Object.hasOwn(preset,'armor'))return preview;
   const payload=applySummaryArmor({stream:true,messages:[{role:'system',content:preview.system},{role:'user',content:JSON.stringify({sourceMessages:[],outputContract:preview.outputContract})}]},preset.armor);
-  return {...preview,system:payload.messages[0].content,armor:summaryArmorPreview(preset.armor),transport:{stream:true,...(payload.tools?{tools:payload.tools,tool_choice:payload.tool_choice}:{})},...(preset.armor.userPadding?{compatibilityPadding:JSON.parse(payload.messages[1].content).compatibilityPadding}:{})};
+  return {...preview,system:payload.messages[0].content,armor:summaryArmorPreview(preset.armor),transport:{stream:true,...(payload.tools?{tools:payload.tools,tool_choice:payload.tool_choice}:{})}};
 }
