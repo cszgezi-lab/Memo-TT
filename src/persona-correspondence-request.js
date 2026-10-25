@@ -1,3 +1,4 @@
+import {personaWireMessages} from './persona-request-body.js';
 // Pure request preparation for the explicitly selected production contract.
 // Complete source/baseline/current notes remain unchanged; focus indices are not fact judgments.
 import {estimateUnits,sha256} from './utils.js';
@@ -5,7 +6,7 @@ import {foldName} from './persona-identity.js';
 import {hasPersonaSpeechEvidence,personaSpeechPairs,personaSpeechSpanEnd} from './persona-speech-evidence.js';
 import {decorate} from './persona-entry-review.js';
 
-export const PERSONA_FRESH_REQUEST_VIEW=16;
+export const PERSONA_FRESH_REQUEST_VIEW=17;
 export const PERSONA_NEUTRAL_SYSTEM='你是文本助手。';
 export const PERSONA_COMPACT_TASK=`你只生成JSON文本，宿主负责读取、保存和替换人物档案；不需要操作外部软件、文件或世界书。根据用户JSON中的完整source，对照original.parts的B段和previous的N段，写出人物当前有效的完整局部修改，不写事件总结或只加态度、台词。
 保留未被正文改变的身份、职业、爱好、安全或保密习惯；不补未知身份、知情或原因。计划不当完成，一次行为不扩大成永久规则。已有B有对应属性时局改B，旧N有相反当前表述时同步局改N，不能让旧反向指令继续有效。保留具体方法、理由、对象、条件、限度和优先级；未修改部分由宿主保留。
@@ -40,7 +41,7 @@ function bodyOf(req){
   }catch{throw invalid();}
 }
 function checkBudget(req,inputLimit){
-  const inputUnits=estimateUnits(JSON.stringify(req.messages));
+  const inputUnits=estimateUnits(JSON.stringify(personaWireMessages(req)));
   if(inputLimit!==undefined&&(!Number.isFinite(inputLimit)||inputLimit<0||inputUnits>inputLimit))throw Object.assign(new Error('人物对应比较输入超过原预算，尚未发送'),{code:'INPUT_BUDGET_EXCEEDED'});
 }
 function checkEncodedRequest(req,frozenManifest){
@@ -129,7 +130,7 @@ export function prepareCorrespondingRequest(req,{inputLimit,frozenManifest,taskP
   const view=req?.requestViewVersion??req?.inputSize?.personaRequestView;
   if(!Number.isSafeInteger(view)||view<12)return req;
   const body=bodyOf(req);
-  if(view===PERSONA_FRESH_REQUEST_VIEW)return prepareTaskLastRequest(req,body,{inputLimit,frozenManifest,taskPrompt});
+  if(view>=16&&view<=PERSONA_FRESH_REQUEST_VIEW)return prepareTaskLastRequest(req,body,{inputLimit,frozenManifest,taskPrompt});
   if(view>PERSONA_FRESH_REQUEST_VIEW)throw invalid();
   if(req.referenceEncoding){
     if(req.referenceEncoding.version!==2||!req.entryReview||typeof req.messages[0].content!=='string'||!req.messages[0].content.endsWith(exampleSupplement+'\n\n'+decisionPreservationRule+'\n'+finalReviewRule))throw invalid();

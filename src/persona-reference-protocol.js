@@ -1,3 +1,4 @@
+import {personaRequestBody} from './persona-request-body.js';
 // Explicit reference decoding only. No I/O, provider calls or profile mutation.
 // The caller supplies a binding from its final send or verified exact cache.
 import {sha256} from './utils.js';
@@ -19,7 +20,7 @@ function refuse(code,{focusIds=[],refs=[]}={}){
 function requestBody(req){
   try{
     if(!Array.isArray(req?.messages)||req.messages.length!==2||req.messages[0]?.role!=='system'||req.messages[1]?.role!=='user'||typeof req.messages[0].content!=='string'||typeof req.messages[1].content!=='string'||typeof req.identity?.resolve!=='function')throw Error();
-    const body=JSON.parse(req.messages[1].content);
+    const body=personaRequestBody(req);
     if(!plain(body)||!Array.isArray(body.original)||!Array.isArray(body.previous)||!Array.isArray(body.reviewFocus)||!Array.isArray(body.source))throw Error();
     if(body.source.some(s=>!plain(s)||!Number.isSafeInteger(s.floor)||s.floor<0||typeof s.text!=='string'))throw Error();
     if([...body.original,...body.previous].some(p=>!plain(p)||!safeName(p.name)||p.parts!==undefined&&(!Array.isArray(p.parts)||p.parts.some(part=>!plain(part)||!validRef(part.ref)||typeof part.text!=='string'))||p.noteParts!==undefined&&(!Array.isArray(p.noteParts)||p.noteParts.some(note=>!plain(note)||!validRef(note.ref)||!Number.isSafeInteger(note.paragraph)||note.paragraph<1))))throw Error();

@@ -1,3 +1,4 @@
+import {personaWireMessages} from './persona-request-body.js';
 import {applySummaryArmor,normalizeSummaryArmor,summaryArmorEnabled,summaryToolContent} from './summary-armor.js';
 import {activeSummaryPreset} from './summary-presets.js';
 import {estimateUnits,sha256,isPlainObject} from './utils.js';
@@ -25,7 +26,7 @@ function legacyAuditPayload(base,armor){
 export const activePersonaArmor=settings=>normalizeSummaryArmor(activeSummaryPreset(settings?.summaryPresets??'')?.armor);
 export function preparePersonaTransport(request,config,{replay=false,compatibility,expectedWireSha256}={}){
   const armor=normalizeSummaryArmor(replay?compatibility:activePersonaArmor(config));
-  const base={model:config.dynamicPersonaModel,messages:request.messages,stream:true,...(config.dynamicPersonaJsonMode&&!armor.antiTruncation?{response_format:{type:'json_object'}}:{}),...(config.dynamicPersonaOutputTokens>0?{max_tokens:config.dynamicPersonaOutputTokens}:{})};
+  const base={model:config.dynamicPersonaModel,messages:personaWireMessages(request),stream:true,...(config.dynamicPersonaJsonMode&&!armor.antiTruncation?{response_format:{type:'json_object'}}:{}),...(config.dynamicPersonaOutputTokens>0?{max_tokens:config.dynamicPersonaOutputTokens}:{})};
   let payload=applySummaryArmor(base,armor,{task:'persona'});
   if(replay){
     if(expectedWireSha256&&sha256(JSON.stringify(payload.messages))!==expectedWireSha256&&(armor.headerPadding||armor.userPadding)){
@@ -36,7 +37,9 @@ export function preparePersonaTransport(request,config,{replay=false,compatibili
     }
     Object.defineProperty(payload,'_personaLocalAuditOnly',{value:true});
   }
-  return {...request,messages:payload.messages,transportPayload:payload,...(summaryArmorEnabled(armor)?{wireCompatibility:armor}:{})};
+  const unpackedChars=JSON.stringify(request.messages).length,encodedChars=JSON.stringify(base.messages).length;
+  const inputSize={...request.inputSize,personaRequestChars:JSON.stringify(payload.messages).length,personaPayloadChars:JSON.stringify(payload).length,personaUnpackedChars:unpackedChars,personaStructureSavedChars:Math.max(0,unpackedChars-encodedChars)};
+  return {...request,messages:payload.messages,transportPayload:payload,inputSize,...(summaryArmorEnabled(armor)?{wireCompatibility:armor}:{})};
 }
 export const personaTransportUnits=request=>request.wireCompatibility?estimateUnits(JSON.stringify(request.transportPayload)):estimateUnits(JSON.stringify(request.messages));
 export function decodePersonaTransport(reply,armor){

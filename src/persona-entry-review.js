@@ -1,3 +1,4 @@
+import {personaRequestBody} from './persona-request-body.js';
 // Opt-in comparison metadata only. The original parser/edit guards run first.
 // This module performs no I/O and never changes a profile or recovery state.
 import {estimateUnits,sha256} from './utils.js';
@@ -25,7 +26,7 @@ function invalid(){return Object.assign(new Error('人物对应比较请求未�
 function bodyOf(req){
   try{
     if(!Array.isArray(req?.messages)||req.messages.length!==2||req.messages[0]?.role!=='system'||req.messages[1]?.role!=='user')throw Error();
-    const body=JSON.parse(req.messages[1].content);
+    const body=personaRequestBody(req);
     if(!Array.isArray(body.source)||!Array.isArray(body.reviewFocus)||!Array.isArray(body.original)||!Array.isArray(body.previous))throw Error();
     if(body.source.some(m=>!m||!Number.isSafeInteger(m.floor)||m.floor<0||typeof m.text!=='string')||body.reviewFocus.some(h=>!h||!Number.isSafeInteger(h.floor)||h.floor<0||typeof h.name!=='string'||!h.name.trim()||typeof h.excerpt!=='string'))throw Error();
     if([...body.original,...body.previous].some(p=>!p||typeof p.name!=='string'||!p.name.trim()||p.parts!==undefined&&(!Array.isArray(p.parts)||p.parts.some(part=>!part||typeof part.ref!=='string'||typeof part.text!=='string'))||p.noteParts!==undefined&&(!Array.isArray(p.noteParts)||p.noteParts.some(note=>!note||typeof note.ref!=='string'||!Number.isSafeInteger(note.paragraph)||note.paragraph<1))))throw Error();

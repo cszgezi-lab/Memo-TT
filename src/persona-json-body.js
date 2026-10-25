@@ -16,8 +16,13 @@ function completeFencedJSONPrefix(text){
   }
   return false;
 }
+export function personaContentText(content){
+  if(typeof content==='string')return content;
+  if(Array.isArray(content)&&content.length>0&&content.every(part=>part&&part.type==='text'&&typeof part.text==='string'))return content.map(part=>part.text).join('');
+  throw new SyntaxError('Unsupported persona text content');
+}
 export function personaJSONBody(content,{allowRestart=false}={}){
-  const source=String(content??''),direct=source.trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');
+  const source=personaContentText(content),direct=source.trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');
   try{return JSON.parse(direct);}catch(error){if(!allowRestart)throw error;}
   const markers=[...source.matchAll(/```json(?=[\s{])[ \t]*(?:\r?\n)?/gi)],roots=[];let complete=0;
   for(let i=0;i<markers.length;i++){

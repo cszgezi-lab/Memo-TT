@@ -1,3 +1,4 @@
+import {personaRequestBody} from './persona-request-body.js';
 // Bounded persona recovery with request-bound per-actor review receipts.
 import {clone,estimateUnits,sha256} from './utils.js';
 import {foldName} from './persona-identity.js';
@@ -66,7 +67,7 @@ export async function recoverPersonaBatch({messages,previous,fingerprint,cached,
  const canonicalFor=request=>name=>request.identity.resolve(name)?.name??String(name??'').trim();
  const decorateScope=(request,manifest,source)=>{
   if(!manifest)return entryReview.decorate(request);
-  const body=JSON.parse(request.messages[1].content),floors=new Set(source.map(m=>m.index));
+  const body=personaRequestBody(request),floors=new Set(source.map(m=>m.index));
   // A child request may rediscover hints outside the original bounded index.
   // Only the original manifest supplies IDs; full source remains unchanged.
   body.reviewFocus=manifest.filter(h=>floors.has(h.floor));
@@ -79,7 +80,7 @@ export async function recoverPersonaBatch({messages,previous,fingerprint,cached,
   return [{packetVersion:2,protocolVersion:2,job:clone(job),requestViewVersion:request.requestViewVersion,exactWireSha256:bound.exactWireSha256,...(request.wireCompatibility?{wireCompatibility:clone(request.wireCompatibility)}:{}),encodedModelBody:clone(bound.encodedModelBody),encodedBodySha256:exactSha(bound.encodedModelBody),expandedBodySha256:bound.expandedBodySha256,acceptedTargets,receipts:records.map(r=>clone(r.receipt)),candidateHashes:acceptedRows.map(row=>({target:canonical(row.name),hash:sha256({...row,through})}))}];
  };
  const pendingValidation=(rows,request,target)=>{
-  const body=JSON.parse(request.messages[1].content),canonical=canonicalFor(request),owner=foldName(canonical(target)),refs=new Set([...body.original,...body.previous].filter(p=>foldName(canonical(p.name))===owner).flatMap(p=>[...(p.parts??[]),...(p.noteParts??[])]).map(p=>p.ref).filter(safeRef)),pendingEdits=[],changeCheckIssues=[];
+  const body=personaRequestBody(request),canonical=canonicalFor(request),owner=foldName(canonical(target)),refs=new Set([...body.original,...body.previous].filter(p=>foldName(canonical(p.name))===owner).flatMap(p=>[...(p.parts??[]),...(p.noteParts??[])]).map(p=>p.ref).filter(safeRef)),pendingEdits=[],changeCheckIssues=[];
   for(const row of rows.filter(p=>foldName(canonical(p.name))===owner)){
    for(const edit of row.composition?.pendingEdits??[]){
     if(!pendingReasons.has(edit?.reason)||pendingEdits.length>=48)continue;
@@ -93,7 +94,7 @@ export async function recoverPersonaBatch({messages,previous,fingerprint,cached,
  };
  const ownedValidation=(value,request,target)=>{
   const safe=safeValidation(value,{editEvidence:true});if(!target)return safe;
-  const body=JSON.parse(request.messages[1].content),canonical=canonicalFor(request),owner=foldName(canonical(target)),refs=new Set([...body.original,...body.previous].filter(p=>foldName(canonical(p.name))===owner).flatMap(p=>[...(p.parts??[]),...(p.noteParts??[])]).map(p=>p.ref));
+  const body=personaRequestBody(request),canonical=canonicalFor(request),owner=foldName(canonical(target)),refs=new Set([...body.original,...body.previous].filter(p=>foldName(canonical(p.name))===owner).flatMap(p=>[...(p.parts??[]),...(p.noteParts??[])]).map(p=>p.ref));
   if(safe.pendingEdits)safe.pendingEdits=safe.pendingEdits.map(edit=>({...edit,...(edit.ref&&!refs.has(edit.ref)?{ref:undefined}:{}),...(edit.refs?{refs:edit.refs.filter(ref=>refs.has(ref))}:{})})).filter(edit=>edit.ref||edit.refs?.length);
   if(safe.changeCheckIssues)safe.changeCheckIssues=safe.changeCheckIssues.flatMap(issue=>{
    const match=/^本批转变仍逐字指向未更新的旧片段：([BN][1-9]\d{0,5}(?:、[BN][1-9]\d{0,5})*)；需显式局部修改，未自动移除$/.exec(issue);if(!match)return [issue];
@@ -104,7 +105,7 @@ export async function recoverPersonaBatch({messages,previous,fingerprint,cached,
  };
  const ownedIssues=(value,request,target)=>{
   const safe=entryReview.safeIssues(value);if(!target)return safe;
-  const body=JSON.parse(request.messages[1].content),canonical=canonicalFor(request),owner=foldName(canonical(target)),focus=new Set(body.reviewFocus.filter(f=>foldName(canonical(f.name))===owner).map(f=>f.id)),refs=new Set([...body.original,...body.previous].filter(p=>foldName(canonical(p.name))===owner).flatMap(p=>[...(p.parts??[]),...(p.noteParts??[])]).map(p=>p.ref));
+  const body=personaRequestBody(request),canonical=canonicalFor(request),owner=foldName(canonical(target)),focus=new Set(body.reviewFocus.filter(f=>foldName(canonical(f.name))===owner).map(f=>f.id)),refs=new Set([...body.original,...body.previous].filter(p=>foldName(canonical(p.name))===owner).flatMap(p=>[...(p.parts??[]),...(p.noteParts??[])]).map(p=>p.ref));
   return safe.map(issue=>({...issue,focusIds:issue.focusIds.filter(id=>focus.has(id)),refs:issue.refs.filter(ref=>ref==='new'||refs.has(ref))}));
  };
  const inspectReview=(rows,request,legacyActors=[])=>{
@@ -119,7 +120,7 @@ export async function recoverPersonaBatch({messages,previous,fingerprint,cached,
   return records;
  };
  const reviewedRequest=(request,job)=>{
-  const body=JSON.parse(request.messages[1].content),canonical=canonicalFor(request);
+  const body=personaRequestBody(request),canonical=canonicalFor(request);
   if(!job.repair)return request;
   const target=job.target;if(target)for(const key of ['original','previous','materials','reviewFocus','evidenceFloors','attention','characterCandidates'])if(Array.isArray(body[key]))body[key]=body[key].filter(p=>foldName(canonical(p.name))===foldName(target));
   body.repair={target:target??null,issue:job.issue,explanation:PERSONA_ISSUES[job.issue],editIndex:job.editIndex,allowedFloors:job.floors,invalidProfiles:job.invalidProfiles,invalidAnswer:job.invalidAnswer,instruction:target?`只处理这个人物，最多返回一份完整有效结果；不要回显其他已通过的人物。${job.splitTarget?'本子范围确无该人物变化时可返回空列表；其他范围会继续处理。':'不能用空列表跳过失败人物。'}`:'修正回答结构，重新返回本范围中有变化的人物；不要输出解释或代码围栏。'};
@@ -139,7 +140,7 @@ export async function recoverPersonaBatch({messages,previous,fingerprint,cached,
    // A rehashable cache field cannot erase the original index. Reconstruct it
    // from the original full source/previous, independently of staged metadata.
    const view=expectedRequestViewVersion>=12?expectedRequestViewVersion:r.packets[0]?.requestViewVersion??12,base=rebuildAuditRequest({messages,previous,requestViewVersion:view,job:null,manifest:null}),initial=entryReview.decorate(base);
-   if(initial.requestViewVersion!==view||sha256(JSON.parse(initial.messages[1].content).reviewFocus)!==sha256(r.manifest))throw reviewError([{code:'REQUEST_SHAPE'}]);
+   if(initial.requestViewVersion!==view||sha256(personaRequestBody(initial).reviewFocus)!==sha256(r.manifest))throw reviewError([{code:'REQUEST_SHAPE'}]);
    initialManifestVerified=true;
   }
   const counts=new Map(r.manifest.filter(f=>!r.legacyActors.some(name=>foldName(name)===foldName(f.name))).map(f=>[f.id,0]));let working=merge(previous,state.candidates.filter(p=>r.legacyActors.some(name=>foldName(name)===foldName(p.name))));const latest=new Map();
@@ -196,10 +197,10 @@ export async function recoverPersonaBatch({messages,previous,fingerprint,cached,
   if(reviewing){
    if(state.entryReviewRequired&&!state.review)throw reviewError([{code:'REVIEW_MISSING'}]);
    request=decorateScope(request,state.review?.manifest,source);
-   if(!state.review){const full=JSON.parse(request.messages[1].content),pendingTargets=state.jobs.every(j=>j.repair&&j.target)?state.jobs.map(j=>foldName(j.target)):null,legacyActors=[...new Set([...state.candidates.map(p=>p.name),...(pendingTargets?full.reviewFocus.filter(f=>!pendingTargets.includes(foldName(f.name))).map(f=>f.name):[])])],manifest=full.reviewFocus;state.entryReviewRequired=true;state.review={version:1,manifest,manifestHash:sha256({fingerprint,manifest,legacyActors}),legacyActors,packets:[]};}
+   if(!state.review){const full=personaRequestBody(request),pendingTargets=state.jobs.every(j=>j.repair&&j.target)?state.jobs.map(j=>foldName(j.target)):null,legacyActors=[...new Set([...state.candidates.map(p=>p.name),...(pendingTargets?full.reviewFocus.filter(f=>!pendingTargets.includes(foldName(f.name))).map(f=>f.name):[])])],manifest=full.reviewFocus;state.entryReviewRequired=true;state.review={version:1,manifest,manifestHash:sha256({fingerprint,manifest,legacyActors}),legacyActors,packets:[]};}
   }
   if(state.review&&!resumeAudited){auditReview({complete:false});resumeAudited=true;}
-  const body=JSON.parse(request.messages[1].content);
+  const body=personaRequestBody(request);
   const canonical=name=>request.identity.resolve(name)?.name??String(name??'').trim();
   if(reviewing)request=reviewedRequest(request,job);
   if(job.repair&&!reviewing){

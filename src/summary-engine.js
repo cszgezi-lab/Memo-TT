@@ -663,14 +663,23 @@ export class SummaryEngine {
     const contextBinding=value=>sha256({scope:value.scope,sourceRevision:value.sourceRevision,rules:value.rules,focus:value.focusSpec,configVersion:value.configVersion,rulesVersion:value.rulesVersion});
     const initialContextBinding=contextBinding(batch);
     const initialContextRevision=this.packRequests&&typeof this.repository.getCommittedRevision==='function'?await this.repository.getCommittedRevision(batch.scope):null;
-    const authoritativeRecords = this.packRequests && this.repository.listRecords ? await this.repository.listRecords(batch.scope) : null;
+    let summaryContext=this.packRequests&&this.repository.readSummaryContext&&this.repository.verifySummaryContext&&this.repository.releaseSummaryContext
+      ? await this.repository.readSummaryContext(batch.scope,{check:()=>throwIfAborted(signal)}) : null;
+    const releaseContext=()=>{if(summaryContext){this.repository.releaseSummaryContext(summaryContext.token);summaryContext=null;}};
+    try {
+    const authoritativeRecords = summaryContext?.records ?? (this.packRequests && this.repository.listRecords ? await this.repository.listRecords(batch.scope) : null);
+    let plannedFirstRequest=null;
     const contextReadRevision=initialContextRevision!==null?await this.repository.getCommittedRevision(batch.scope):null;
     const children = this.packRequests ? await planSummaryRequests(batch, {
       maxSourceUnits: this.maxSourceUnits ?? this.maxInputUnits,
       frozen: frozenPlan?.requestPlan,
       checkpointPlan: checkpoint?.splitPlan,
       signal,
-      prepare: child => this._prepareRequest(child, batch, { relevantRecords, authoritativeRecords, signal }),
+      prepare: async child => {
+        const prepared=await this._prepareRequest(child, batch, { relevantRecords, authoritativeRecords, signal });
+        if(child.childRange.childIndex===0)plannedFirstRequest={key:sha256(child),prepared};
+        return prepared;
+      },
     }) : splitSummaryBatch(batch, { maxInputUnits: this.maxSourceUnits ?? this.maxInputUnits });
     const splitPlan = children.map((child) => ({
       childIndex: child.childRange.childIndex,
@@ -707,7 +716,7 @@ export class SummaryEngine {
       for (const childIndex of completed) {
         const plan = splitPlan[childIndex];
         const receipt = checkpoint.receipts.find((item) => item?.operationId === plan.operationId);
-        const persisted = this.repository.recoverOperationReceipt?await this.repository.recoverOperationReceipt(batch.scope,plan.operationId):await this.repository.getOperationReceipt(plan.operationId);
+        const persisted = this.repository.recoverOperationReceipt?await this.repository.recoverOperationReceipt(batch.scope,plan.operationId,{summaryContext:summaryContext?.token,check:()=>throwIfAborted(signal)}):await this.repository.getOperationReceipt(plan.operationId);
         if (!receipt || !persisted || persisted.scopeKey !== checkpointBinding.scopeKey || persisted.bundleHash !== receipt.bundleHash || persisted.committedRevision !== plan.expectedRevision + 1) {
           throw new ScopeConflictError('summary checkpoint completed child lacks a matching committed receipt', { childIndex, operationId: plan.operationId });
         }
@@ -826,7 +835,7 @@ export class SummaryEngine {
       try {
         throwIfAborted(signal);
         if(this.recoveryEnabled&&this.repository.recoverOperationReceipt){
-          const receipt=await this.repository.recoverOperationReceipt(batch.scope,child.operationId);
+          const receipt=await this.repository.recoverOperationReceipt(batch.scope,child.operationId,{summaryContext:summaryContext?.token,check:()=>throwIfAborted(signal)});
           if(receipt){
             if(receipt.sourceRevision!==child.sourceRevision||receipt.committedRevision!==child.expectedRevision+1)throw new ScopeConflictError('saved child no longer matches frozen task');
             state.receipts.push(receipt);completed.add(childIndex);state.completedChildren=[...completed];emit('resume_commit',baseDetails,'success');continue;
@@ -838,9 +847,17 @@ export class SummaryEngine {
         let firstContext=null;
         if(childIndex===0&&authoritativeRecords&&initialContextRevision!==null&&initialContextRevision===contextReadRevision&&child.expectedRevision===initialContextRevision&&contextBinding(child)===initialContextBinding){
           throwIfAborted(signal);
-          if(await this.repository.getCommittedRevision(child.scope)===initialContextRevision)firstContext=authoritativeRecords;
+          if(summaryContext){
+            await this.repository.verifySummaryContext(child.scope,summaryContext.token,{check:()=>throwIfAborted(signal)});
+            firstContext=authoritativeRecords;
+          }else if(await this.repository.getCommittedRevision(child.scope)===initialContextRevision)firstContext=authoritativeRecords;
         }
-        const { request, context, configuredLimit } = await this._prepareRequest(child, batch, { relevantRecords,authoritativeRecords:firstContext, signal });
+        const prepared=summaryContext&&firstContext&&plannedFirstRequest?.key===sha256(child)?plannedFirstRequest.prepared:null;
+        plannedFirstRequest=null;
+        // Release raw historical chunks before waiting on the model. Only the
+        // effective records required for validation remain in this operation.
+        releaseContext();
+        const { request, context, configuredLimit } = prepared??await this._prepareRequest(child, batch, { relevantRecords,authoritativeRecords:firstContext, signal });
         this.requestLog.push({ operationId: child.operationId, parentOperationId: batch.operationId, childIndex, sourceIds: child.sourceMessages.map((message) => message.id) });
         baseDetails.inputLimit=configuredLimit;
         const resultBinding=sha256({sourceRevision:child.sourceRevision,scope:child.scope,rules:child.rules,focus:child.focusSpec,configVersion:child.configVersion});
@@ -1270,6 +1287,7 @@ export class SummaryEngine {
     // bounded recovery catalog as well.
     if(this.recoveryEnabled)for(const child of children)if(child.operationId!==batch.operationId)await this.repository.clearPrivateTask?.(batch.scope,child.operationId).catch(error=>emit('checkpoint_warning',{...errorDiagnostics(error),storageArtifact:'checkpoint'},'warning'));
     return state;
+    } finally { releaseContext(); }
   }
 
   async run(batch, options = {}) { return this.process(batch, options); }

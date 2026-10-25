@@ -36,6 +36,9 @@ const DEFAULT_NAMESPACE = 'shiyi-memory-core';
 // One-operation capabilities only. Ordinary reads still verify every chunk.
 // A serialized JSON snapshot cannot qualify for the in-memory reuse path.
 const VERIFIED_SCOPE_READS=new WeakMap();
+// Summary planning and receipt recovery share one verified read, scoped to this
+// operation only. Tokens carry no serializable data and are released before I/O.
+const SUMMARY_CONTEXT_READS=new WeakMap();
 const CATEGORIES = [
   'events',
   'awarenessChanges',
@@ -166,6 +169,14 @@ async function projectScope(repository,header,verifiedChunks,{includeOperations=
   const snapshot={scope:frozenScope,committedRevision:pointer.committedRevision,records,pointer,manifest};
   if(captureChunks)captureScope(repository,snapshot,verifiedChunks,{includeOperations,excludeOperations,includeHistory},snapshot);
   return snapshot;
+}
+
+function visibleChunkKeys(header,chunks,{includeOperations=[],excludeOperations=[]}={}) {
+  const operations=header.manifest?.controls?.operations??{};
+  return (header.manifest?.chunks??[]).filter(ref=>{
+    const parent=chunks.get(ref.key)?.operationId?.split('/child-')[0];
+    return !excludeOperations.includes(parent)&&(!['pending','deleted'].includes(operations[parent])||includeOperations.includes(parent));
+  }).map(ref=>ref.key);
 }
 
 function emptyRecords() {
@@ -455,6 +466,32 @@ export class MemoryRepository {
     return this._readScope(scope,options);
   }
 
+  async readSummaryContext(scope,{includeOperations=[],excludeOperations=[],check=()=>{}}={}) {
+    const header=await this._loadScope(scope,{check}),verified=VERIFIED_SCOPE_READS.get(header);
+    VERIFIED_SCOPE_READS.delete(header);
+    const options={includeOperations,excludeOperations,includeHistory:false,check};
+    const snapshot=await projectScope(this,header,verified.chunks,options);
+    check();
+    const token=Object.freeze({});
+    SUMMARY_CONTEXT_READS.set(token,{...verified,visibleKeys:visibleChunkKeys(header,verified.chunks,options)});
+    return {records:snapshot.records,committedRevision:snapshot.committedRevision,token};
+  }
+
+  async _summaryContext(scope,token,check=()=>{}) {
+    check();const frozenScope=normalizeScope(scope),reuse=SUMMARY_CONTEXT_READS.get(token);
+    const mismatch=()=>new PersistenceError('本次存储快照已变化，请重新读取',{storageArtifact:'memory',storageStage:'compare',reason:'storage_mismatch'});
+    if(!reuse||reuse.store!==this.store||reuse.namespace!==this.namespace||reuse.scopeKey!==scopeKey(frozenScope))throw mismatch();
+    const header=await this._readScopeHeader(frozenScope,check);
+    if(stableStringify(reuse.pointer)!==stableStringify(header.pointer)||stableStringify(reuse.refs)!==stableStringify(header.manifest?.chunks??[]))throw mismatch();
+    check();return {header,reuse};
+  }
+
+  async verifySummaryContext(scope,token,{check=()=>{}}={}) {
+    await this._summaryContext(scope,token,check);return true;
+  }
+
+  releaseSummaryContext(token) { SUMMARY_CONTEXT_READS.delete(token); }
+
   async _readScopeHeader(frozenScope,check=()=>{}) {
     check();const pointer=await this._getPointer(frozenScope);check();
     if(!pointer.manifestRef)return {scope:frozenScope,committedRevision:0,pointer,manifest:null};
@@ -726,18 +763,25 @@ export class MemoryRepository {
     return found.found ? clone(found.value) : null;
   }
 
-  async recoverOperationReceipt(scope,operationId){
+  async recoverOperationReceipt(scope,operationId,{summaryContext=null,check=()=>{}}={}){
+    check();
     const found=await this.getOperationReceipt(operationId);
+    check();
     if(found){if(found.scopeKey!==scopeKey(scope))throw new ScopeConflictError('receipt scope mismatch');return found;}
     // Keep the same complete integrity check and effective projection, then
     // inspect the chunks already verified by that read. A missing receipt is
     // normal for new work and must not reread every historical native entry.
-    const header=await this._loadScope(scope),verified=VERIFIED_SCOPE_READS.get(header);
-    VERIFIED_SCOPE_READS.delete(header);
+    let header,verified;
+    if(summaryContext)({header,reuse:verified}=await this._summaryContext(scope,summaryContext,check));
+    else {header=await this._loadScope(scope,{check});verified=VERIFIED_SCOPE_READS.get(header);VERIFIED_SCOPE_READS.delete(header);}
     // Receipt recovery consumes the effective projection and its pointer, not
     // an additional deep copy of every immutable generation's audit history.
     // Keep all chunk hashes and projection checks, including for absent work.
-    const snapshot=await projectScope(this,header,verified.chunks,{includeHistory:false}),p=snapshot.pointer;
+    // Pending/excluded operations may give planning a different view. In that
+    // case retain the normal projection checks, using the same verified chunks.
+    const alreadyProjected=summaryContext&&stableStringify(verified.visibleKeys)===stableStringify(visibleChunkKeys(header,verified.chunks));
+    const snapshot=alreadyProjected?header:await projectScope(this,header,verified.chunks,{includeHistory:false,check}),p=snapshot.pointer;
+    check();
     if(p.operationId!==operationId){
       for(const ref of snapshot.manifest?.chunks??[]){
         const c=verified.chunks.get(ref.key);

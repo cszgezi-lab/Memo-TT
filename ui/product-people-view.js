@@ -117,6 +117,7 @@ export function peopleGroups(snapshot = {}) {
   return [...groups.values()].map(group => ({
     ...group,
     casting:applyPersonaCasting({name:group.name,casting:group.profiles[0]?.casting},snapshot.dynamicPersona?.castingOverrides).casting,
+    userDirectives:Object.hasOwn(snapshot.dynamicPersona?.directiveOverrides??{},nameKey(group.name))?snapshot.dynamicPersona.directiveOverrides[nameKey(group.name)]:group.profiles[0]?.userDirectives??[],
     indexWords:(dictionary.entries??[]).find(e=>nameKey(e.name)===nameKey(group.name))?.indexWords??[],
     profileSources: group.profiles,
     profiles: currentPersonaProfiles(group.profiles, settings.dynamicPersonaMvuMode),
@@ -255,8 +256,8 @@ export function peopleDetailHTML(group, allProfiles = group?.profiles ?? [], edi
   const reviewRows=(profile?.reviewSuggestions??[]).map(s=>`<div class="memo-card"><div class="memo-packet">${esc(profile.composition?.parts?.find(p=>p.key===s.key)?.text??'片段已变化')}</div><p>${esc(s.reason)}</p><p class="memo-help">第${esc(s.evidence.floor)}楼依据：${esc(s.evidence.quote)}</p><button type="button" data-persona-history="${esc(s.key)}" data-profile="${esc(profile.id)}" data-history-value="true">确认移入历史（不删除）</button></div>`).join('');
   const archived=(profile?.composition?.parts??[]).filter(p=>p.status==='historical').map(p=>`<div class="memo-card"><div class="memo-packet">${esc(p.text)}</div><button type="button" data-persona-history="${esc(p.key)}" data-profile="${esc(profile.id)}" data-history-value="false">恢复当前设定</button></div>`).join('');
   const casting=personaCasting(group.casting??group.profiles[0]?.casting);
-  const emphasis=profile?.userDirectives??[];
-  const emphasisHTML=profileId?`<section data-people-emphasis="${esc(profileId)}"><p class="memo-help">单独保存，不会被自动总结改掉。每次发消息时放在人物档案开头和结尾，并在你的消息前再送一次。一行一句，删掉某一行就是删除这条。</p><label>强调内容<textarea rows="4" data-emphasis-lines>${esc(emphasis.join('\n'))}</textarea></label><label>或者用大白话告诉模型要记住、修改或删掉什么<textarea rows="3" data-emphasis-ask placeholder="例如：对某个人现在按你写的方式相处。已有的句子会保留，除非你说明要改或删。"></textarea></label><div class="memo-actions"><button type="button" data-emphasis-draft>让模型整理</button><button type="button" data-emphasis-save>保存强调</button></div><p class="memo-help">「让模型整理」会用人设接口调用一次模型，结果只填进上面的框，保存后才生效。</p></section>`:'';
+  const emphasis=group.userDirectives??profile?.userDirectives??[];
+  const emphasisHTML=!group.ambiguous?`<section data-people-emphasis="${esc(profileId)}" data-emphasis-name="${esc(group.name)}"><p class="memo-help">单独保存，不会被自动总结改掉。动态人设开启时，提到此人物就会注入。一行一句，删掉某一行就是删除这条。</p><label>强调内容<textarea rows="4" data-emphasis-lines>${esc(emphasis.join('\n'))}</textarea></label><label>或者用大白话告诉模型要记住、修改或删掉什么<textarea rows="3" data-emphasis-ask placeholder="例如：对某个人现在按你写的方式相处。已有的句子会保留，除非你说明要改或删。"></textarea></label><div class="memo-actions"><button type="button" data-emphasis-draft>让模型整理</button><button type="button" data-emphasis-save>保存强调</button></div><p class="memo-help">「让模型整理」会用人设接口调用一次模型，结果只填进上面的框，保存后才生效。</p></section>`:'';
   const options=(values,current)=>Object.entries(values).map(([value,label])=>`<option value="${value}"${value===current?' selected':''}>${label}</option>`).join('');
   const profileRows = group.profiles.slice(0, 2).map(p => personFieldRow({
     label: p.locked ? '整份档案 · 已锁定' : `整份档案 · ${Number.isInteger(p.through) ? `依据至 #${p.through}` : '已保存'}`,
@@ -306,7 +307,7 @@ export function peopleDetailHTML(group, allProfiles = group?.profiles ?? [], edi
   }).join(''))).join('');
   return `<div class="memo-person-detail-head"><button type="button" data-people-back>返回人物</button><div class="memo-person-identity">${personAvatarHTML(group, avatar)}<div><h4 data-people-title tabindex="-1">${esc(group.name)}</h4><p class="memo-help">${esc(personaCastingLabel(casting))}</p></div></div><p class="memo-person-detail-stats memo-help">${esc(stats)}</p></div><div class="memo-person-categories">
     ${personCategory('basic', '基本资料', '姓名、头像与定位', basic)}
-    ${personCategory('emphasis', '强调', emphasis.length?`${emphasis.length} 条`:'未设置', emphasisHTML||'<p class="memo-help">先补建人物档案后即可保存强调。</p>')}
+    ${personCategory('emphasis', '强调', emphasis.length?`${emphasis.length} 条`:'未设置', emphasisHTML||'<p class="memo-help">请先确认此称呼对应的人物。</p>')}
     ${personCategory('attributes', '人物属性', `${group.fieldCount} 项属性`, fieldGroup('属性',group.fieldCount,factRows,'还没有属性记录。',{category:'entityFactChanges',add:'attribute'}))}
     ${personCategory('persona', '动态人设', `${group.profiles.length} 份档案`, persona)}
     ${personCategory('relations', '关系与约定', `${relationThreads.length} 组关系 · ${currentCommitments.length} 项约定`, relations)}
@@ -422,7 +423,7 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect, avat
     }
     const revision = snapshot.peopleRevision;
     const nextStamp = revision != null ? `revision:${revision}:${sha256(snapshot.modules??[])}`
-      : `legacy:${JSON.stringify([snapshot.cardRevision ?? snapshot.cards, snapshot.dynamicPersona?.profiles, snapshot.dictionary, snapshot.modules, snapshot.settings?.aliases, snapshot.settings?.dynamicPersonaMvuMode])}`;
+      : `legacy:${JSON.stringify([snapshot.cardRevision ?? snapshot.cards, snapshot.dynamicPersona?.profiles, snapshot.dynamicPersona?.directiveOverrides, snapshot.dictionary, snapshot.modules, snapshot.settings?.aliases, snapshot.settings?.dynamicPersonaMvuMode])}`;
     avatarScope = nextAvatarScope;
     if (stamp === nextStamp) {
       if (avatarRevision !== avatarStore.revision) { avatarRevision = avatarStore.revision; draw(); }
@@ -527,9 +528,9 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect, avat
     if(button.hasAttribute('data-persona-history')){void run(()=>app.setDynamicPersonaPartHistorical(button.dataset.profile,button.dataset.personaHistory,button.dataset.historyValue==='true'),{name:'dynamic-persona',button});return;}
     if(button.hasAttribute('data-emphasis-save')||button.hasAttribute('data-emphasis-draft')){
       const box=button.closest('[data-people-emphasis]');if(!box)return;
-      const id=box.dataset.peopleEmphasis,lines=box.querySelector('[data-emphasis-lines]');
-      if(button.hasAttribute('data-emphasis-save'))void run(()=>app.editDynamicPersona(id,{userDirectives:lines.value.split(/\n/u)}),{name:'dynamic-persona',button});
-      else void run(async()=>{const result=await app.draftDynamicPersonaDirectives(id,box.querySelector('[data-emphasis-ask]').value);lines.value=result.directives.join('\n');},{name:'dynamic-persona',button});
+      const name=box.dataset.emphasisName,lines=box.querySelector('[data-emphasis-lines]');
+      if(button.hasAttribute('data-emphasis-save'))void run(()=>app.setPersonDirectives(name,lines.value.split(/\n/u)),{name:'dynamic-persona',button});
+      else void run(async()=>{const result=await app.draftPersonDirectives(name,box.querySelector('[data-emphasis-ask]').value);lines.value=result.directives.join('\n');},{name:'dynamic-persona',button});
       return;
     }
     if(button.hasAttribute('data-casting-save')){

@@ -27,7 +27,7 @@ import {PERSONA_RECOVERY_VERSION,personaValidationError} from './persona-validat
 import {hasPersonaSpeechEvidence} from './persona-speech-evidence.js';
 import {applyPersonaArcReferences} from './persona-arc-references.js';
 import {recoverPersonaBatch} from './persona-response-recovery.js';
-import {personaJSONBody} from './persona-json-body.js';
+import {personaJSONBody,personaContentText} from './persona-json-body.js';
 export {personaJSONBody} from './persona-json-body.js';
 import * as personaEntryReview from './persona-entry-review.js';
 import {prepareCorrespondingRequest,PERSONA_FRESH_REQUEST_VIEW} from './persona-correspondence-request.js';
@@ -386,7 +386,8 @@ export function personaRequest(options){
 }
 export function parsePersonaResponse(response,{messages,spans,previous,identity,dictionary,aliases='',stageMode='narrative',preserveSources=false,developmentMessages,diagnostic=()=>{},collectFailures=false,updateContractVersion=1}){
   const reason=response?.choices?.[0]?.finish_reason;
-  const content=response?.choices?.[0]?.message?.content,responseShape={bodyChars:typeof content==='string'?content.length:0,contentType:contentType(content)};
+  const content=response?.choices?.[0]?.message?.content;let bodyChars=0;try{bodyChars=personaContentText(content).length;}catch{}
+  const responseShape={bodyChars,contentType:contentType(content)};
   if(reason==='content_filter'||structuredPersonaRefusal(response))throw Object.assign(new Error('人设接口明确报告拒答或内容过滤；原档案保留，可更换配置后重试'),{code:'MODEL_OUTPUT_BLOCKED',details:{stage:'validate',reason:'output_blocked',modelRole:'dynamicPersona',...responseShape}});
   if(['length','max_tokens'].includes(reason))throw Object.assign(new Error('人设回答未完整结束；原档案保留'),{code:'MODEL_OUTPUT_TRUNCATED'});
   let body;
@@ -551,7 +552,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
   }
   // Emphasis lives beside the dossiers, keyed by name, so rollback, rebuild,
   // batch deletion and undo (which restore old profile snapshots) keep it.
-  const withDirectives=p=>{const lines=data.directiveOverrides?.[foldName(p.name)];return lines?.length?{...p,userDirectives:lines}:p;};
+  const withDirectives=p=>Object.hasOwn(data.directiveOverrides??{},foldName(p.name))?{...p,userDirectives:data.directiveOverrides[foldName(p.name)]}:p;
   const publicData=()=>{const {workingProfiles,...manual}=data.manualPlan??{};return {...data,profiles:data.profiles.map(p=>projectCurrentPersona(withDirectives(p),personaTimelineFrame(records()))),manualPlan:data.manualPlan?{...manual,stagedProfileCount:workingProfiles?.length??0}:null};};
   const emit=()=>notify({...clone(publicData()),...view,busy:Boolean(job),lastIndex,plan:plan()});
   const plan=()=>autoSummaryPlan(data.batches,{startFloor:data.startFloor,batchSize:settings().dynamicPersonaEvery,keepRecent:settings().dynamicPersonaKeepRecent,lastIndex});
@@ -966,7 +967,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       // floor range are never truncated; only a still-oversized request fails.
       let economy=false;
       if(inputUnits>config.dynamicPersonaInputUnits){economy=true;request=buildPersonaRequest(true);inputUnits=measureTransport(request);}
-      const requestFingerprint=q=>sha256({recovery:PERSONA_RECOVERY_VERSION,sourceHash,request:q.messages,model:config.dynamicPersonaModel,endpoint:config.dynamicPersonaEndpoint,output:config.dynamicPersonaOutputTokens,previous});
+      const requestFingerprint=q=>sha256({...(q.requestViewVersion>=17?{requestViewVersion:q.requestViewVersion}:{}),recovery:PERSONA_RECOVERY_VERSION,sourceHash,request:q.messages,model:config.dynamicPersonaModel,endpoint:config.dynamicPersonaEndpoint,output:config.dynamicPersonaOutputTokens,previous});
       const cacheKey=manualId?`persona-result-${manualId}-${key}`:`persona-result-${key}`;
       personaStep='cached_response';const cached=await bound.read(cacheKey,null);guard();
       let fingerprint=requestFingerprint(request);
@@ -974,7 +975,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       // each exact old view solely to prove its fingerprint; v3 used the older
       // evolution contract, v2 had main-card sources, and v1 predates them.
       if(cached?.fingerprint&&cached.fingerprint!==fingerprint&&(cached.response||cached.recovery?.version===PERSONA_RECOVERY_VERSION&&cached.recovery.failed!==true)){
-        for(const viewVersion of [12,13,14,15,11,10,9,8,7,6,5,4,3,2,1]){
+        for(const viewVersion of [16,12,13,14,15,11,10,9,8,7,6,5,4,3,2,1]){
           let legacyEconomy=false,legacy=buildPersonaRequest(false,range.messages,previous,viewVersion),legacyUnits=estimateUnits(JSON.stringify(legacy.messages));
           if(legacyUnits>config.dynamicPersonaInputUnits){legacyEconomy=true;legacy=buildPersonaRequest(true,range.messages,previous,viewVersion);legacyUnits=estimateUnits(JSON.stringify(legacy.messages));}
           if(cached.fingerprint!==requestFingerprint(legacy))continue;
@@ -985,12 +986,12 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       view={...view,worldbook:{status:world.status??'ready',cardName:world.cardName,books:[...new Set(world.entries?.map(e=>e.book)??[])],entries:world.entries?.length??0,safeFragments:world.spans?.length??0,audit:request.audit,guide:personaSourceGuide({...world,audit:request.audit})}};emit();
       if(inputUnits>config.dynamicPersonaInputUnits)throw Object.assign(new Error(`人设输入约 ${inputUnits} 单位，超过设置的 ${config.dynamicPersonaInputUnits}；未截断正文或改变楼数`),{code:'INPUT_BUDGET_EXCEEDED',details:{stage:'prepare',reason:'input_budget_exceeded',inputUnits,inputLimit:config.dynamicPersonaInputUnits}});
       if(economy)diagnostic({run,task:'persona',phase:'plan',level:'warning',details:{reason:'persona_input_soft_cap',inputUnits,inputLimit:config.dynamicPersonaInputUnits,droppedAids:['materials','arcReferences'],modelRole:'dynamicPersona'}});
-      diagnostic({run,task:'persona',phase:'plan',details:{startIndex:next.nextStart,endIndex:next.nextEnd,sourceCount:range.messages.length,inputUnits,inputLimit:config.dynamicPersonaInputUnits,maxTokens:config.dynamicPersonaOutputTokens,plannedRequests:1,modelRole:'dynamicPersona',...request.inputSize}});
+      diagnostic({run,task:'persona',phase:'plan',details:{startIndex:next.nextStart,endIndex:next.nextEnd,sourceCount:range.messages.length,inputUnits,inputLimit:config.dynamicPersonaInputUnits,maxTokens:config.dynamicPersonaOutputTokens,plannedRequests:1,modelRole:'dynamicPersona',...(requestViewVersion===PERSONA_FRESH_REQUEST_VIEW?preparePersonaTransport(request,config).inputSize:request.inputSize)}});
       showStep('正在生成／检查人物档案（独立 API）');
       const recoveryGuard=()=>{guard();if(Object.keys(config).filter(k=>k.startsWith('dynamicPersona')||k==='aliases').some(k=>stableStringify(settings()[k])!==stableStringify(config[k])))throw canceled();};
       const savedRecovery=cached?.fingerprint===fingerprint&&cached.recovery?.version===PERSONA_RECOVERY_VERSION&&!cached.recovery.failed?cached.recovery:null;
       let replayOriginalReply=Boolean(cached?.fingerprint===fingerprint&&cached.response&&(!savedRecovery||savedRecovery.requestCount===0&&!savedRecovery.jobs[0]?.repair&&savedRecovery.jobs[0]?.depth===0));
-      const buildScopeRawRequest=(messages,previous,viewVersion)=>{let next=buildPersonaRequest(economy,messages,previous,viewVersion,false);const measured=viewVersion===PERSONA_FRESH_REQUEST_VIEW?prepareCorrespondingRequest(next,{taskPrompt:customPersonaTask(config.dynamicPersonaPrompt)}):next;if(viewVersion>=3&&!economy&&estimateUnits(JSON.stringify(measured.messages))>config.dynamicPersonaInputUnits)next=buildPersonaRequest(true,messages,previous,viewVersion,false);return next;};
+      const buildScopeRawRequest=(messages,previous,viewVersion)=>{let next=buildPersonaRequest(economy,messages,previous,viewVersion,false);const measured=viewVersion===PERSONA_FRESH_REQUEST_VIEW?prepareCorrespondingRequest(next,{taskPrompt:customPersonaTask(config.dynamicPersonaPrompt)}):next;if(viewVersion>=3&&!economy&&(viewVersion===PERSONA_FRESH_REQUEST_VIEW?measureTransport(measured):estimateUnits(JSON.stringify(measured.messages)))>config.dynamicPersonaInputUnits)next=buildPersonaRequest(true,messages,previous,viewVersion,false);return next;};
       const parseNativePersona=(response,{messages,previous,request})=>{personaStep='parse_profile';return parsePersonaResponse(response,{messages,spans:request.spans,previous,identity:request.identity,developmentMessages:request.source,stageMode:config.dynamicPersonaMvuMode,preserveSources:true,collectFailures:true,updateContractVersion:request.requestViewVersion>=12?8:request.requestViewVersion>=10?7:request.requestViewVersion>=8?6:request.requestViewVersion>=7?5:request.requestViewVersion>=5?4:request.requestViewVersion>=4?3:request.requestViewVersion>=3?2:1,diagnostic:event=>diagnostic({run,task:'persona',level:'info',...event})});};
       const exactPersonaHash=value=>sha256(JSON.stringify(value));
       const parseBoundPersona=(response,context,binding)=>{
@@ -1261,6 +1262,20 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       await save({...data,castingOverrides,profiles:data.profiles.map(p=>applyPersonaCasting(p,castingOverrides))},bound);
     });
   }
+  function directivePerson(name){
+    name=String(name??'').trim();personaAliases([name]);
+    if(!name)throw new Error('请选择人物');
+    const identity=personaIdentity({previous:data.profiles,dictionary:dictionary(),aliases:settings().aliases});
+    const person=identity.resolve(name);
+    if(!person&&identity.people.some(p=>[p.name,...p.aliases].some(n=>foldName(n)===foldName(name))))throw new Error('这个称呼对应多个人物，请先确认姓名');
+    return {name:person?.name??name,aliases:[...(person?.visibleAliases??[])],profile:person?.profiles?.find(p=>!p.deleted)};
+  }
+  async function setDirectives(name,lines){
+    check();const bound=currentWorkspace,normalized=normalizeUserDirectives(lines);
+    await transact(async()=>{check(bound);const person=directivePerson(name);
+      await save({...data,directiveOverrides:{...data.directiveOverrides,[foldName(person.name)]:normalized}},bound);
+    });
+  }
   async function edit(id,patch){check();const bound=currentWorkspace;await transact(async()=>{
     check(bound);const old=data.profiles.find(p=>p.id===id);if(!old)throw new Error('人物档案不存在');
     if(patch.text!==undefined&&(typeof patch.text!=='string'||!patch.text.trim()||unsafe.test(patch.text)))throw new Error('请输入人物档案文本，不要写入脚本代码');
@@ -1344,7 +1359,11 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
   async function draftDirectives(id,instruction){
     check();const bound=currentWorkspace,profile=data.profiles.find(p=>p.id===id&&!p.deleted);
     if(!profile)throw new Error('人物档案不存在');
-    const request=personaDirectiveRequest(withDirectives(profile),instruction);
+    return draftPersonDirectives(profile.name,instruction,bound);
+  }
+  async function draftPersonDirectives(name,instruction,bound=currentWorkspace){
+    check(bound);const person=directivePerson(name);
+    const request=personaDirectiveRequest(withDirectives(person.profile??{name:person.name,aliases:person.aliases}),instruction);
     const config=settings();
     const wire=preparePersonaTransport(request,config);
     if(personaTransportUnits(wire)>config.dynamicPersonaInputUnits)throw new Error('人设请求超过输入预算，请减少填充或提高预算');
@@ -1359,7 +1378,20 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     // Select from actual recent dialogue before expanding worldbook markers.
     // Source/system prose is never itself a reason to inject every character.
     const query=typeof sceneQuery==='string'?sceneQuery:payload.messages.filter(m=>m.role!=='system').slice(-4).map(m=>typeof m.content==='string'?m.content.replace(/\[\[(?:SHIYI|MEMO_(?:TT|ST))_PERSONA:[^\]]+\]\]/g,''):'').join('\n');
-    const identities=personaIdentity({previous:available,dictionary:dictionary(),aliases:settings().aliases,source:query});
+    // Independent rules are eligible only for names with no formal dossier.
+    // A hidden, stale, deleted, pending or rejected dossier is not a missing
+    // dossier and must continue through the existing admission path below.
+    const directiveOnly=[];
+    if(enabled&&ready&&settings().dynamicPersonaEnabled&&bound?.isCurrent()){
+      const allIdentity=personaIdentity({previous:data.profiles,dictionary:dictionary(),aliases:settings().aliases});
+      for(const [name,lines] of Object.entries(data.directiveOverrides??{})){
+        if(!Array.isArray(lines)||!lines.length)continue;
+        const person=allIdentity.resolve(name);
+        if(person?.profiles?.length||data.profiles.some(p=>[p.name,...(p.aliases??[])].some(n=>foldName(n)===name))||!person&&allIdentity.people.some(p=>[p.name,...p.aliases].some(n=>foldName(n)===name)))continue;
+        directiveOnly.push({name:person?.name??name,aliases:[...(person?.visibleAliases??[])],userDirectives:lines});
+      }
+    }
+    const identities=personaIdentity({previous:[...available,...directiveOnly],dictionary:dictionary(),aliases:settings().aliases,source:query});
     const selectedPeople=new Set(identities.mentions(query).map(p=>p.key));
     const relevant=available.filter(p=>selectedPeople.has(foldName(p.name)));
     const finalized=await worldbook.finalize?.(payload,relevant),rejected=new Set(finalized?.rejectedSources??[]),used=new Set((finalized?.injected??[]).filter(id=>!rejected.has(id)));
@@ -1367,7 +1399,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     const extras=available.filter(p=>!rejected.has(p.id)&&!used.has(p.id)&&selectedPeople.has(foldName(p.name))&&(settings().dynamicPersonaMvuMode!=='strict'||!p.bindings?.length));
     if(extras.length)payload.messages.splice(Math.max(0,payload.messages.length-1),0,{role:'system',content:'【当前路线动态人设补充】根据已发生剧情持续更新的完整人物档案；最新正文与每份档案顶部的“当前剧情变化”优先，不因后文保留了较早关系历程、旧口吻或底色就把人物演回旧阶段；'+(settings().dynamicPersonaMvuMode==='strict'?'遵守当前 MVU 阶段边界':'MVU 数值只作参考，不因数值未变否定剧情发展')+'；不赋予其他角色额外知情。\n'+extras.map(p=>`${p.name}（依据至 #${p.through}）：\n${p.text}`).join('\n\n')});
     const selected=available.filter(p=>used.has(p.id)||extras.includes(p));
-    const rules=selected.flatMap(p=>(p.userDirectives??[]).filter(line=>String(line??'').trim()).map(line=>`${p.name}：${String(line).trim()}`));
+    const rules=[...selected,...directiveOnly.filter(p=>selectedPeople.has(foldName(p.name)))].flatMap(p=>(p.userDirectives??[]).filter(line=>String(line??'').trim()).map(line=>`${p.name}：${String(line).trim()}`));
     if(rules.length)payload.messages.splice(Math.max(0,payload.messages.length-1),0,{role:'system',content:'【强调】只有这几句。和原书、旧态度或后文概括冲突时，只照这里做。\n'+rules.join('\n')});
     if(worldbook.renderText)for(const m of payload.messages)if(m.role==='system'&&typeof m.content==='string'&&m.content.startsWith('【当前路线动态人设补充】'))m.content=worldbook.renderText(m.content);
     const audit=view.worldbook?.audit??[];
@@ -1383,5 +1415,5 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     view={...view,lastInjection:{at:now(),people:selected.map(p=>p.name),replaced:used.size,supplemental:extras.length,coverage:{replacedEntries:finalized?.replacedEntries??0,replacedFragments:finalized?.replacedFragments??0,restoredFragments:finalized?.restoredFragments??0,replacedCardFields:finalized?.replacedCardFields??0,rejectedProfiles:rejected.size,owned:audit.filter(a=>a.status==='owned').length,shared:audit.filter(a=>a.status==='shared').length,unresolved:audit.filter(a=>['unresolved','unsupported'].includes(a.status)).length},profiles:selected.map(recallProfile),text:selected.map(p=>`${p.name}：\n${p.text}`).join('\n\n')}};emit();
     return clone(view.lastInjection);
   }
-  return {load,reconcileSaved,clear,inspect,inspectWorldbook,previewManual,createManual,resumeManual,resumeManualBatch,splitManualBatch,previewApplyManualPrefix,applyManualPrefix,pauseManual,discardManual,wake,process,stop,pause,resume,setStart,edit,deleteProfiles,setCasting,setPartHistorical,bind,merge,undo,add,profiles,inject,syncMirror,previewDeleteBatch,deletePersonaBatch,restorePersonaBatch,draftDirectives,previewReview,startReview,manageReview,applyReview,reviewMarkdown:()=>personaRefinementMarkdown(data.refinement),interruptReview:()=>Promise.all([refinement.interrupt(),factualReview.interrupt()]),interruptFactReview:()=>factualReview.interrupt(),retryReview:()=>refinement.retry(),processReview:()=>refinement.process(),processFactReview:()=>factualReview.process(),export:()=>clone(data),async dispose(){disposed=true;refinement.dispose();await factualReview.dispose();stop({preserveManual:true});if(job)job.abort();},get state(){return {...clone(publicData()),...view,busy:Boolean(job),lastIndex,plan:plan()};}};
+  return {load,reconcileSaved,clear,inspect,inspectWorldbook,previewManual,createManual,resumeManual,resumeManualBatch,splitManualBatch,previewApplyManualPrefix,applyManualPrefix,pauseManual,discardManual,wake,process,stop,pause,resume,setStart,edit,deleteProfiles,setCasting,setDirectives,draftPersonDirectives,setPartHistorical,bind,merge,undo,add,profiles,inject,syncMirror,previewDeleteBatch,deletePersonaBatch,restorePersonaBatch,draftDirectives,previewReview,startReview,manageReview,applyReview,reviewMarkdown:()=>personaRefinementMarkdown(data.refinement),interruptReview:()=>Promise.all([refinement.interrupt(),factualReview.interrupt()]),interruptFactReview:()=>factualReview.interrupt(),retryReview:()=>refinement.retry(),processReview:()=>refinement.process(),processFactReview:()=>factualReview.process(),export:()=>clone(data),async dispose(){disposed=true;refinement.dispose();await factualReview.dispose();stop({preserveManual:true});if(job)job.abort();},get state(){return {...clone(publicData()),...view,busy:Boolean(job),lastIndex,plan:plan()};}};
 }

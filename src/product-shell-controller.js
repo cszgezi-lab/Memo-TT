@@ -619,6 +619,7 @@ export function createProductShellController({
     const validateBundle=summaryBundleValidator();
     summaryRepository.commitBundle=async (...args)=>{validateBundle(args[0]);return repository.commitBundle(...args);};
     summaryRepository.listRecords=async scope=>(await repository.readScope(scope,{includeOperations:[operationId],excludeOperations,includeHistory:false})).records;
+    if(repository.readSummaryContext)summaryRepository.readSummaryContext=(scope,options={})=>repository.readSummaryContext(scope,{...options,includeOperations:[operationId],excludeOperations});
     try {
       engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, preferStreaming:true, summaryArmor:summaryPresetFromRules(batch.rules)?.armor, supplementModel:supplementModelFactory?.()??null, staged:state.settings.summaryStaged, verified:state.settings.summaryReviewEnabled, isolateIds:true, packRequests:state.job.requestPlanning==='wire-v1', maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: state.job.splitUnits, requireFloorSummaries, stageCrossBatchMerges:true, recoveryEnabled:true, outputReserveUnits: 0, now });
       const result = await engine.process(batch, { signal: preflightAbort.signal, onDiagnostic, allowInvalidToolRetry, onSourcePlan:plan=>{
