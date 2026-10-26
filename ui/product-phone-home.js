@@ -25,11 +25,11 @@ const countProgress = (done, total) => Number.isSafeInteger(done) && done >= 0 &
 
 // Formal saved coverage is independent of the currently running task. A saved
 // manual candidate must never extend the range of the applied dossier.
-function savedProgress(rows, { startFloor, lastIndex, batchSize, keepRecent, advanceFromLatest=false }) {
+function savedProgress(rows, { startFloor, originFloor, lastIndex, batchSize, keepRecent, advanceFromLatest=false }) {
   const saved = rows.filter(row => row.status !== 'deleted' && (row.status === 'saved' || row.savedOperationId));
   let observed = validFloor(lastIndex) ? lastIndex : 0;
   if (!validFloor(lastIndex)) for (const row of (advanceFromLatest?rows:saved)) if (validFloor(row.endIndex)) observed = Math.max(observed, row.endIndex);
-  return summaryProgress(rows, {advanceFromLatest,
+  return summaryProgress(rows, {advanceFromLatest,originFloor,
     startFloor: validFloor(startFloor) ? startFloor : 1,
     lastIndex: observed,
     batchSize: Number.isSafeInteger(batchSize) && batchSize > 0 ? batchSize : 10,
@@ -104,7 +104,7 @@ export function paintPhoneHome(panel, s = {}) {
   const allMemoryRows = itemsOf(s.batches);
   const memoryRows = allMemoryRows.filter(row => row && row.status !== 'deleted' && (row.status === 'saved' || !hasNewerSavedCoverage(row, allMemoryRows)));
   const personaRows = itemsOf(persona.batches).filter(row => row && row.status !== 'deleted');
-  const memory = savedProgress(allMemoryRows, {advanceFromLatest:true, startFloor: s.autoStartFloor, lastIndex: s.autoLastIndex, batchSize: settings.autoSummaryEvery, keepRecent: settings.autoKeepRecent });
+  const memory = savedProgress(allMemoryRows, {advanceFromLatest:true, startFloor: s.autoStartFloor, originFloor:s.autoOriginFloor, lastIndex: s.autoLastIndex, batchSize: settings.autoSummaryEvery, keepRecent: settings.autoKeepRecent });
   const formal = savedProgress(personaRows, { startFloor: persona.startFloor, lastIndex: persona.lastIndex, batchSize: settings.dynamicPersonaEvery, keepRecent: settings.dynamicPersonaKeepRecent });
   const candidate = candidateProjection(persona);
   const memoryFailures = memoryRows.filter(isFailure).length;
@@ -118,7 +118,7 @@ export function paintPhoneHome(panel, s = {}) {
   // Use the application's source-validated plan when available. This is a
   // projection only: the scheduler still owns readiness and all dispatch gates.
   const nextMemory = s.automatic ?? autoSummaryPlan(allMemoryRows, {advanceFromLatest:true,
-    startFloor: s.autoStartFloor ?? 1, lastIndex: s.autoLastIndex ?? null,
+    startFloor: s.autoStartFloor ?? 1, originFloor:s.autoOriginFloor, lastIndex: s.autoLastIndex ?? null,
     batchSize: settings.autoSummaryEvery ?? 20, keepRecent: settings.autoKeepRecent ?? 0,
   });
   if(!memoryBusy&&memoryRow&&validFloor(nextMemory.nextStart)&&(nextMemory.nextStart<memoryRow.startIndex||nextMemory.nextStart>memoryRow.endIndex))memoryRange='';
@@ -171,9 +171,9 @@ export function paintPhoneHome(panel, s = {}) {
         bar.setAttribute('aria-valuetext', item.busy ? item.phase + '，暂无可计算的批次进度' : '当前没有可计算的任务进度');
       }
     }
-    const enable=find('[data-home-enable="'+kind+'"]');if(enable){const enabled=Boolean(settings[kind==='memory'?'autoSummaryEnabled':'dynamicPersonaEnabled']);enable.textContent=enabled?'关闭':'启动';enable.setAttribute('aria-pressed',String(enabled));enable.dataset.enabled=String(enabled);}
+    const enable=find('[data-home-enable="'+kind+'"]');if(enable){const enabled=Boolean(settings[kind==='memory'?'autoSummaryEnabled':'dynamicPersonaEnabled']);enable.textContent=kind==='memory'?(enabled?'暂停自动':'开启自动'):(enabled?'关闭':'启动');enable.setAttribute('aria-pressed',String(enabled));enable.dataset.enabled=String(enabled);}
     const sync=find('[data-home-sync="'+kind+'"]');if(sync)sync.disabled=!s.chatReady||item.busy;
-    const automatic=find('[data-home-automatic="'+kind+'"]');if(automatic){automatic.textContent='自动更新';automatic.title=item.automatic+'；在设置中调整';automatic.disabled=false;}
+    const automatic=find('[data-home-automatic="'+kind+'"]');if(automatic){automatic.textContent='自动设置';automatic.title=item.automatic+'；在设置中调整';automatic.disabled=false;}
     const channel = find('[data-home-workflow="' + kind + '"]');
     if (channel) { channel.dataset.attention = String(item.failures > 0); channel.dataset.busy = String(item.busy); }
   }

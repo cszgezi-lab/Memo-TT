@@ -23,18 +23,13 @@ export function paintPlannedBatchPreview(node,state,kind='memory'){
   const formal=isPersona?persona.batches??[]:state.batches??[];
   const candidate=isPersona&&['running','paused','failed'].includes(persona.manualPlan?.status)?persona.manualPlan.items??[]:[];
   const forecast=plannedBatchPreview([...formal,...candidate],{startFloor:(isPersona?persona.startFloor:state.autoStartFloor)??1,lastIndex:isPersona?persona.lastIndex:state.autoLastIndex,batchSize:(isPersona?settings.dynamicPersonaEvery:settings.autoSummaryEvery)??20,keepRecent:(isPersona?settings.dynamicPersonaKeepRecent:settings.autoKeepRecent)??0});
-  if(!isPersona){
-    // The real queue stops at its first unfinished batch. A later forecast is
-    // not a task and has no durable ID or delete action; do not number it as
-    // if work had continued past that barrier, or recreate a deleted task's
-    // appearance while this chat's automatic continuation is paused.
-    const startFloor=state.autoStartFloor??1;
-    const barrier=Math.min(Infinity,...formal.filter(row=>row.status!=='saved'&&row.status!=='deleted'&&Number.isSafeInteger(row.startIndex)&&Number.isSafeInteger(row.endIndex)&&row.endIndex>=startFloor&&!hasNewerSavedCoverage(row,formal)).map(row=>Math.max(startFloor,row.startIndex)));
-    forecast.items=state.summaryHold?[]:forecast.items.filter(row=>row.endIndex<barrier);
-  }
+  // Main summaries show durable tasks only. Future source ranges belong to
+  // the next-batch indicator, not undeletable cards in the management list.
+  if(!isPersona){forecast.items=[];forecast.waiting=[];}
   const count=node.closest?.('[data-summary-memory-batches],[data-summary-persona-batches]')?.querySelector('[data-summary-batch-count],[data-persona-batch-count]');
   if(count&&forecast.known){const active=formal.filter(r=>r.status!=='deleted'),pending=forecast.items.length+[...active,...candidate].filter(r=>['queued','pending','running','failed','interrupted','staged'].includes(r.status)).length,unapplied=candidate.filter(r=>r.status==='saved').length;count.textContent=[`${active.length+candidate.length+forecast.items.length} 批`,pending?`${pending} 批待处理`:null,unapplied?`${unapplied} 批候选待应用`:null].filter(Boolean).join(' · ');}
   const stamp=JSON.stringify([forecast,formal.map(r=>[r.startIndex,r.endIndex,r.status]),candidate.map(r=>[r.startIndex,r.endIndex,r.status])]);if(node.dataset.forecastStamp===stamp)return;node.dataset.forecastStamp=stamp;
+  if(!isPersona){node.innerHTML='';return;}
   const label=r=>`${r.startIndex}–${r.endIndex} 楼`;
   node.innerHTML=!forecast.known?'':`<header class="memo-forecast-heading"><b>待处理 ${forecast.items.length} 批</b><span>每批 ${forecast.batchSize} 楼 · 保留 ${forecast.keepRecent} 楼</span></header><div class="memo-forecast-grid">${forecast.items.map((r,i)=>`<details class="memo-compact-batch" data-planned-range="${r.startIndex}-${r.endIndex}" data-compact-start="${r.startIndex}"><summary aria-label="${label(r)} · 待处理"><span data-compact-number>${String(i+1).padStart(2,'0')}</span><span class="memo-compact-dot" data-state="planned" title="待处理"></span></summary><div class="memo-compact-detail"><b>${label(r)}</b><p>待处理</p></div></details>`).join('')}</div>${forecast.waiting.length?`<p class="memo-help">已累计 ${forecast.waiting.at(-1).endIndex-forecast.waiting.at(-1).startIndex+1}/${forecast.batchSize} 楼</p>`:''}`;
 }

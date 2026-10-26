@@ -1,5 +1,5 @@
 import { sourceKey } from '../product-sources.js';
-import { autoSummaryPlan, summaryCoverage, advancedStartFloor, summaryFrontier, hasNewerSavedCoverage } from '../product-auto-summary.js';
+import { autoSummaryPlan, summaryCoverage, advancedStartFloor, summaryFrontier, summaryOrigin, hasNewerSavedCoverage } from '../product-auto-summary.js';
 import { savedBatchOperation } from '../product-batches.js';
 import { stableStringify } from '../utils.js';
 import { mvuContext } from '../product-custom-modules.js';
@@ -11,21 +11,21 @@ import { failureText } from '../product-feedback.js';
 export function createAutomaticService(appScope) {
 function validAutomaticBatches(){return appScope.state.batches.filter(b=>!Object.values(b.records??{}).flat().some(r=>r.sourceRefs?.some(ref=>appScope.autoInvalidSources.has(sourceKey(ref)))));}
 
-function automaticPlan(){return autoSummaryPlan(validAutomaticBatches(),{advanceFromLatest:true,startFloor:appScope.state.autoStartFloor??1,batchSize:appScope.core.settings.autoSummaryEvery,keepRecent:appScope.core.settings.autoKeepRecent,lastIndex:appScope.state.autoLastIndex??null});}
+function automaticPlan(){return autoSummaryPlan(validAutomaticBatches(),{advanceFromLatest:true,startFloor:appScope.state.autoStartFloor??1,originFloor:appScope.state.autoOriginFloor,batchSize:appScope.core.settings.autoSummaryEvery,keepRecent:appScope.core.settings.autoKeepRecent,lastIndex:appScope.state.autoLastIndex??null});}
 
-async function syncAutoStartFloor(diagnosticRun,{check=()=>{}}={}){
+async function syncAutoStartFloor(diagnosticRun,{check=()=>{},resumeAfterDeletion=false}={}){
     check();
     if(!appScope.workspace)return null;
     const start=appScope.state.autoStartFloor??1;
     const hold=appScope.state.summaryHold;
     // Explicit replacement cutoffs keep their contract. A deletion pause
     // must still reconcile later withdrawals of earlier published batches.
-    if(hold&&hold.reason!=='batch_deleted'){const floor=hold.endIndex+1;await appScope.workspace.write('auto-progress',{startFloor:floor,updatedAt:Date.now()},{check});check();appScope.state.autoStartFloor=floor;return floor;}
-    const next=summaryFrontier(validAutomaticBatches(),start);
-    if(hold?.reason==='batch_deleted'){await appScope.core.updateMemoryControls({automation:{summaryHold:null}},{check,returnView:'deferred'});check();appScope.state.summaryHold=null;}
-    if(next===start)return null;
-    await appScope.workspace.write('auto-progress',{startFloor:next,updatedAt:Date.now()},{check});check();
-    appScope.state.autoStartFloor=next;appScope.notify();
+    if(hold&&hold.reason!=='batch_deleted'){const floor=hold.endIndex+1;await appScope.workspace.write('auto-progress',{startFloor:floor,originFloor:appScope.state.autoOriginFloor,updatedAt:Date.now()},{check});check();appScope.state.autoStartFloor=floor;return floor;}
+    const origin=summaryOrigin(appScope.state.batches,{startFloor:start,originFloor:appScope.state.autoOriginFloor}),next=summaryFrontier(validAutomaticBatches(),origin);
+    if(resumeAfterDeletion&&hold?.reason==='batch_deleted'){await appScope.core.updateMemoryControls({automation:{summaryHold:null}},{check,returnView:'deferred'});check();appScope.state.summaryHold=null;}
+    if(next===start&&appScope.state.autoOriginFloor===origin)return null;
+    await appScope.workspace.write('auto-progress',{startFloor:next,originFloor:origin,updatedAt:Date.now()},{check});check();
+    appScope.state.autoOriginFloor=origin;appScope.state.autoStartFloor=next;appScope.notify();
     appScope.runtimeLog.record({run:diagnosticRun,task:'summary',phase:'auto_start_floor',details:{startFloor:next,from:start}});
     return next;
   }
@@ -38,7 +38,7 @@ async function inspectAutomaticProgress(){
 async function setAutoStartFloor(floor,expectedScope=(appScope.core.readViewState?.()??appScope.core.state).scope){    appScope.assertCurrent();if(appScope.active)throw new Error('请先停止当前总结');
     if(stableStringify(expectedScope)!==stableStringify((appScope.core.readViewState?.()??appScope.core.state).scope))throw new Error('聊天已切换，起算楼层未修改');
     if(!Number.isSafeInteger(floor)||floor<0)throw new Error('起算楼层必须是 0 或正整数');
-    await appScope.workspace.write('auto-progress',{startFloor:floor});appScope.state.autoStartFloor=floor;appScope.notify();
+    await appScope.workspace.write('auto-progress',{startFloor:floor,originFloor:floor});appScope.state.autoOriginFloor=floor;appScope.state.autoStartFloor=floor;appScope.notify();
   }
 
 async function setAutomatic(enabledNow){
@@ -81,7 +81,7 @@ function queueAutomaticSummary(messageId){
     appScope.autoPending=true;wakeAutomaticSummary();
   }
 
-function summaryHeld(){return appScope.state.summaryHold&&appScope.state.summaryHold.reason!=='batch_deleted';}
+function summaryHeld(){return Boolean(appScope.state.summaryHold);}
 function unfinishedManualSummary(){return appScope.state.batches.some(batch=>batch.replacement&&['queued','running','failed','interrupted'].includes(batch.status)&&batch.trigger!=='auto'&&!hasNewerSavedCoverage(batch,appScope.state.batches));}
 
 function wakeAutomaticSummary(){

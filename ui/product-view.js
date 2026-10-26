@@ -266,7 +266,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  }
  function paintMemoryOverview(s){
    const {recent}=memoryPresentation(s);
-   const progress=summaryProgress(s.batches??[],{advanceFromLatest:true,startFloor:s.autoStartFloor??1,lastIndex:s.automatic?.lastIndex??null,keepRecent:s.settings?.autoKeepRecent??0});
+   const progress=summaryProgress(s.batches??[],{advanceFromLatest:true,startFloor:s.autoStartFloor??1,originFloor:s.autoOriginFloor,lastIndex:s.automatic?.lastIndex??null,keepRecent:s.settings?.autoKeepRecent??0});
    const missing=s.automatic?.coverage?.missingRanges??[];
    const missingText=missing.length?'待补 '+missing.map(r=>r.startIndex===r.endIndex?`${r.startIndex} 楼`:`${r.startIndex}–${r.endIndex} 楼`).join('、'):Array.isArray(s.automatic?.coverage?.missingRanges)?'当前没有待补缺口':'缺口尚未检查';
    const ranges=progress.ranges.map(r=>r.startIndex===r.endIndex?`${r.startIndex}`:`${r.startIndex}–${r.endIndex}`);
@@ -313,10 +313,10 @@ function summaryPieGradient({covered=0,missing=0,skipped=0,pending=0}={}){
   const a=at(covered),b=a+at(missing),c=b+at(skipped),d=c+at(pending);
   return `conic-gradient(var(--memo-accent) 0deg ${a}deg,#b04a3a ${a}deg ${b}deg,color-mix(in srgb,currentColor 22%,transparent) ${b}deg ${c}deg,color-mix(in srgb,currentColor 8%,transparent) ${c}deg ${d}deg)`;
 }
-function summaryModuleText({covered,missing,skipped,pending,next,batches=[],startFloor=1,chatFloors=null,advanceFromLatest=false}){
+function summaryModuleText({covered,missing,skipped,pending,next,batches=[],startFloor=1,originFloor,chatFloors=null,advanceFromLatest=false}){
   const range=(a,b)=>a===b?`${a} 楼`:`${a}–${b} 楼`;
   // 已总结范围：直接从已保存批次算，挡住窗口外的批次也算「已总结」（这样不会显示 0%）。
-  const savedRanges=advanceFromLatest?summaryProgress(batches,{startFloor,lastIndex:chatFloors,keepRecent:0,advanceFromLatest:true}).ranges:batches.filter(b=>b.status!=='deleted'&&(b.status==='saved'||b.savedOperationId)&&Number.isSafeInteger(b.startIndex)&&Number.isSafeInteger(b.endIndex)).map(b=>({startIndex:b.startIndex,endIndex:b.endIndex})).sort((a,b)=>a.startIndex-b.startIndex);
+  const savedRanges=advanceFromLatest?summaryProgress(batches,{startFloor,originFloor,lastIndex:chatFloors,keepRecent:0,advanceFromLatest:true}).ranges:batches.filter(b=>b.status!=='deleted'&&(b.status==='saved'||b.savedOperationId)&&Number.isSafeInteger(b.startIndex)&&Number.isSafeInteger(b.endIndex)).map(b=>({startIndex:b.startIndex,endIndex:b.endIndex})).sort((a,b)=>a.startIndex-b.startIndex);
   const merged=[];for(const r of savedRanges){const last=merged.at(-1);if(last&&r.startIndex<=last.endIndex+1)last.endIndex=Math.max(last.endIndex,r.endIndex);else merged.push({...r});}
   const fromFloor=merged[0]?.startIndex??null,toFloor=merged.at(-1)?.endIndex??null;
   const savedText=fromFloor===null?'尚未开始记录':merged.length===1?`已总结 ${range(fromFloor,toFloor)}`:`已总结 ${merged.length} 段：${merged.slice(0,3).map(r=>range(r.startIndex,r.endIndex)).join('、')}${merged.length>3?' …':''}`;
@@ -337,20 +337,20 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
    const settings=s.settings??{},summaryBatches=s.summaryBatches??s.batches??[];
    const observedChatFloors=Number.isSafeInteger(s.autoLastIndex)?s.autoLastIndex:null;
    const rows=[
-     {kind:'memory',title:'记忆总结',batches:summaryBatches,batchSize:settings.autoSummaryEvery,keepRecent:settings.autoKeepRecent,startFloor:s.autoStartFloor??1,detail:`事件 ${countOf(s,'events')} · 知情 ${countOf(s,'awarenessChanges')} · 演绎 ${countOf(s,'performanceHints')} · 楼层摘要 ${countOf(s,'summaryView')} · 疑点 ${countOf(s,'conflicts')}`},
+     {kind:'memory',title:'记忆总结',batches:summaryBatches,batchSize:settings.autoSummaryEvery,keepRecent:settings.autoKeepRecent,startFloor:s.autoStartFloor??1,originFloor:s.autoOriginFloor,detail:`事件 ${countOf(s,'events')} · 知情 ${countOf(s,'awarenessChanges')} · 演绎 ${countOf(s,'performanceHints')} · 楼层摘要 ${countOf(s,'summaryView')} · 疑点 ${countOf(s,'conflicts')}`},
      {kind:'persona',title:'动态人设总结',batches:s.dynamicPersona?.batches??[],batchSize:settings.dynamicPersonaEvery,keepRecent:settings.dynamicPersonaKeepRecent,startFloor:s.dynamicPersona?.startFloor??1,detail:`人物 ${personCount(s)} 位 · 关系 ${countOf(s,'relationshipChanges')} · 约定 ${countOf(s,'commitmentChanges')} · 人设变化 ${countOf(s,'personaChanges')}`},
    ];
   for(const row of rows){
     const node=box.querySelector?.(`[data-summary-module="${row.kind}"]`);if(!node)continue;
     const chatFloors=row.kind==='persona'&&Number.isSafeInteger(s.dynamicPersona?.lastIndex)?s.dynamicPersona.lastIndex:observedChatFloors;
-    const plan=autoSummaryPlan(row.batches,{advanceFromLatest:row.kind==='memory',startFloor:row.startFloor,batchSize:row.batchSize,keepRecent:row.keepRecent,lastIndex:chatFloors});
-    const {covered,missing,skipped,pending}=summaryProgress(row.batches,{advanceFromLatest:row.kind==='memory',startFloor:row.startFloor,batchSize:row.batchSize,keepRecent:row.keepRecent,lastIndex:chatFloors});
+    const plan=autoSummaryPlan(row.batches,{advanceFromLatest:row.kind==='memory',startFloor:row.startFloor,originFloor:row.originFloor,batchSize:row.batchSize,keepRecent:row.keepRecent,lastIndex:chatFloors});
+    const {covered,missing,skipped,pending}=summaryProgress(row.batches,{advanceFromLatest:row.kind==='memory',startFloor:row.startFloor,originFloor:row.originFloor,batchSize:row.batchSize,keepRecent:row.keepRecent,lastIndex:chatFloors});
      // The memory card is a manual action: offer the first eligible missing
      // range even when fewer than autoSummaryEvery floors remain. Automatic
      // cadence still uses autoSummaryPlan.ready and does not start a short tail.
      const missingRange=row.kind==='memory'?plan.coverage.missingRanges[0]:null;
      const next=chatFloors===null?undefined:missingRange?{startIndex:missingRange.startIndex,endIndex:Math.min(missingRange.endIndex,missingRange.startIndex+row.batchSize-1)}:plan.ready?{startIndex:plan.nextStart,endIndex:plan.nextEnd}:null;
-     const text=summaryModuleText({advanceFromLatest:row.kind==='memory',covered,missing,skipped,pending,next,batches:row.batches,startFloor:row.startFloor,chatFloors});
+     const text=summaryModuleText({advanceFromLatest:row.kind==='memory',covered,missing,skipped,pending,next,batches:row.batches,startFloor:row.startFloor,originFloor:row.originFloor,chatFloors});
      const pie=node.querySelector?.('[data-summary-pie]'),progress=node.querySelector('[data-summary-progress]');
      const percent=Math.round(covered/Math.max(1,covered+missing+skipped+pending)*100);if(progress)progress.value=percent;
      node.querySelector('[data-summary-auto-state]').textContent=row.kind==='memory'?`自动总结${settings.autoSummaryEnabled?'已开启':'未开启'}`:`自动人设${settings.dynamicPersonaEnabled?(s.dynamicPersona?.paused?'已暂停':'已开启'):'未开启'}`;

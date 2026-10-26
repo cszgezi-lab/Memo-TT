@@ -1,9 +1,16 @@
 // Main-memory progress can explicitly advance across skipped history; persona
 // keeps the legacy cumulative contract unless its caller opts in.
 export function summaryFrontier(batches=[],startFloor=1){
- return batches.filter(b=>!b.replacedBy&&!b.splitInto?.length&&b.retiredReason!=='sync_incomplete_tail'&&(!b.replacement||b.status==='saved')&&['saved','failed','skipped','deleted'].includes(b.status)&&Number.isSafeInteger(b.startIndex)&&Number.isSafeInteger(b.endIndex)&&b.endIndex>=b.startIndex).reduce((next,b)=>Math.max(next,b.endIndex+1),startFloor);
+ return batches.filter(b=>!b.replacedBy&&!b.splitInto?.length&&b.retiredReason!=='sync_incomplete_tail'&&(!b.replacement||b.status==='saved')&&['saved','failed','skipped'].includes(b.status)&&Number.isSafeInteger(b.startIndex)&&Number.isSafeInteger(b.endIndex)&&b.endIndex>=b.startIndex).reduce((next,b)=>Math.max(next,b.endIndex+1),startFloor);
+}
+// startFloor was historically a moving cursor. Retain a separately persisted
+// user origin; infer legacy origins from retained batch ranges, including withdrawals.
+export function summaryOrigin(batches=[],{startFloor=1,originFloor}={}){
+ if(Number.isSafeInteger(originFloor)&&originFloor>=0)return originFloor;
+ return Math.min(startFloor,...batches.filter(b=>Number.isSafeInteger(b.startIndex)&&b.startIndex>=0&&!b.replacedBy&&!b.splitInto?.length&&b.retiredReason!=='sync_incomplete_tail').map(b=>b.startIndex));
 }
 export function autoSummaryPlan(batches=[],options={}){
+ if(options.advanceFromLatest)options={...options,startFloor:summaryOrigin(batches,options)};
  const legacy=legacyAutoSummaryPlan(batches,options);if(!options.advanceFromLatest)return legacy;
  const next=summaryFrontier(batches,legacy.startFloor),end=next+legacy.batchSize-1,coverage=summaryCoverage(batches,{...options,advanceFromLatest:true});
  return {...legacy,coveredThrough:next-1,nextStart:next,nextEnd:end,ready:legacy.lastIndex!==null&&end<=legacy.eligibleEnd,completedBatches:batches.filter(b=>b.status==='saved'&&b.endIndex<next).length,pendingBatches:legacy.lastIndex===null?null:coverage.missingRanges.reduce((n,r)=>n+Math.floor((r.endIndex-r.startIndex+1)/legacy.batchSize),0),coverage};
@@ -34,7 +41,9 @@ function legacyAutoSummaryPlan(batches=[],{startFloor=1,batchSize=10,keepRecent=
     eligibleEnd,ready:known&&end<=eligibleEnd,pendingBatches:known?coverage.missingRanges.reduce((n,r)=>n+Math.floor((r.endIndex-r.startIndex+1)/batchSize),0):null,coverage};
 }
 /** Interval subtraction, not a per-floor scan: later saved batches do not hide gaps. */
-export function summaryCoverage(batches=[],{startFloor=1,lastIndex=null,keepRecent=2,batchSize=10,advanceFromLatest=false}={}){  if(!Number.isSafeInteger(startFloor)||startFloor<0||!Number.isSafeInteger(keepRecent)||keepRecent<0||!Number.isSafeInteger(batchSize)||batchSize<1)throw new Error('补采楼层设置无效');
+export function summaryCoverage(batches=[],{startFloor=1,originFloor,lastIndex=null,keepRecent=2,batchSize=10,advanceFromLatest=false}={}){
+  if(advanceFromLatest)startFloor=summaryOrigin(batches,{startFloor,originFloor});
+  if(!Number.isSafeInteger(startFloor)||startFloor<0||!Number.isSafeInteger(keepRecent)||keepRecent<0||!Number.isSafeInteger(batchSize)||batchSize<1)throw new Error('补采楼层设置无效');
   if(advanceFromLatest){
     const actual=summaryCoverage(batches,{startFloor,lastIndex,keepRecent,batchSize}),frontier=summaryFrontier(batches,startFloor),end=actual.eligibleEnd;
     if(end===null||end<startFloor)return actual;
@@ -77,7 +86,7 @@ export function retireIncompleteSyncTails(rows,coverage,batchSize){
 // within keepRecent still count once; reserved unsaved floors are not failures.
 export function summaryProgress(batches=[],options={}){
   const saved=batches.filter(b=>Number.isSafeInteger(b.startIndex)&&(options.advanceFromLatest?summaryFrontier([b],0)>0:b.status!=='deleted'&&(b.status==='saved'||b.savedOperationId)));
-  const startFloor=Math.min(options.startFloor??1,...saved.map(b=>b.startIndex));
+  const startFloor=options.advanceFromLatest?summaryOrigin(batches,options):Math.min(options.startFloor??1,...saved.map(b=>b.startIndex));
   const all=summaryCoverage(batches,{...options,startFloor,keepRecent:0});
   const eligible=summaryCoverage(batches,{...options,startFloor});
   const total=Number.isSafeInteger(options.lastIndex)?Math.max(0,options.lastIndex-startFloor+1):0;

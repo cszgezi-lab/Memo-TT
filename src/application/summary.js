@@ -82,8 +82,8 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
       if(appScope.state.stale){const probe=await appScope.core.readRange({count:1});if(probe.status!=='ready')throw new Error('请重新打开当前聊天');appScope.workspace=createWorkspace(appScope.core.workspace());}
       op.check();const lastIndex=await appScope.core.historyTail();op.check();
       appScope.state.autoLastIndex=lastIndex;
-      if(missingOnly){await appScope.syncAutoStartFloor(diagnosticRun,{check:op.check});op.check();batchSize=appScope.core.settings.autoSummaryEvery;}
-      const coverage=missingOnly?summaryCoverage(appScope.validAutomaticBatches(),{advanceFromLatest:true,startFloor:appScope.state.autoStartFloor??1,lastIndex,keepRecent:appScope.core.settings.autoKeepRecent,batchSize}):null;
+      if(missingOnly){await appScope.syncAutoStartFloor(diagnosticRun,{check:op.check,resumeAfterDeletion:true});op.check();batchSize=appScope.core.settings.autoSummaryEvery;}
+      const coverage=missingOnly?summaryCoverage(appScope.validAutomaticBatches(),{advanceFromLatest:true,startFloor:appScope.state.autoStartFloor??1,originFloor:appScope.state.autoOriginFloor,lastIndex,keepRecent:appScope.core.settings.autoKeepRecent,batchSize}):null;
       if(missingOnly&&fullBatchesOnly){
         const oldRows=await appScope.workspace.read('summary-batches',[]);op.check();
         const rows=retireIncompleteSyncTails(oldRows,coverage,batchSize);
@@ -121,15 +121,16 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
         replacement.recordIds=[...new Set(replacement.oldOperations.flatMap(id=>Object.values(batchRecords(view.records.history,id)).flat().map(r=>r.id)))];
         replacement.editsHash=appScope.replacementEditsHash(replacement.recordIds,view.controls);
       }
-      if(!resume)planned=planned.map(p=>({...p,replacement:null,replacementReady:false,replacedBy:null}));
+      if(!resume)planned=planned.map(p=>({...p,replacement:null,replacementReady:false,replacedBy:null,splitInto:null,retiredReason:null}));
       if(replacement)planned=planned.map(p=>({...p,replacement,replacementReady:resume?Boolean(p.replacementReady):false}));
       if(overwrite)planned=planned.map(p=>({...p,excludeOperations:overwrite.excludeOperations}));
       appScope.summaryMonitor(op,{totalBatches:planned.length});
-      // Persist the whole user's selection BEFORE its first paid request,
-      // replacing bookkeeping for reused ranges as well as inserting new ones.
-      // Old successful generations remain active until replacements commit.
-      const planById=new Map(planned.map(p=>[p.id,p]));
-      await appScope.workspace.write('summary-batches',[...list.map(b=>planById.get(b.id)??b),...planned.filter(p=>!list.some(b=>b.id===p.id))]);op.check();
+      // Atomic replacement groups require the full candidate manifest. Ordinary
+      // sync/manual work persists only the batch it is about to execute.
+      if(replacement){
+        const planById=new Map(planned.map(p=>[p.id,p]));
+        await appScope.workspace.write('summary-batches',[...list.map(b=>planById.get(b.id)??b),...planned.filter(p=>!list.some(b=>b.id===p.id))]);op.check();
+      }
       appScope.runtimeLog.record({run:diagnosticRun,task:'summary',phase:'queue_plan',details:{trigger,startIndex:plan.startIndex,endIndex:plan.endIndex,batchSize:plan.batchSize,plannedBatches:planned.length}});
       for(let i=0;i<planned.length;i++){
         remainingPlanned=planned.length-i-1;
@@ -137,7 +138,7 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
         const oldOperation=item.status==='deleted'?null:savedBatchOperation(item);
         currentBatch={...item,status:'running',freshStart:!continuing,error:null,operationId,autoIndex:Boolean(appScope.core.settings.vectorEnabled),previousOperation:oldOperation??null,attempts:batchOperationIds(item).filter(id=>id!==operationId),updatedAt:Date.now()};
         appScope.activeSummaryBatchId=item.id;
-        await appScope.workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]);op.check();
+        await appScope.workspace.update('summary-batches',rows=>rows.some(b=>b.id===item.id)?rows.map(b=>b.id===item.id?currentBatch:b):[...rows,currentBatch],[]);op.check();
         // Staged generations survive crashes but are never available for recall.
         if(!continuing)await appScope.core.updateMemoryControls({operations:{[operationId]:'pending'}});op.check();
         const range=await appScope.core.readRange({startIndex:item.startIndex,endIndex:item.endIndex});

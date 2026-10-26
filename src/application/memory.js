@@ -139,7 +139,7 @@ async function readBatches(view,{check:parentCheck}={}){
     });
     if(view.controls?.automation?.summaryHold){
       appScope.state.summaryHold=view.controls.automation.summaryHold;
-      appScope.state.autoStartFloor=appScope.state.summaryHold.endIndex+1;
+      if(appScope.state.summaryHold.reason!=='batch_deleted')appScope.state.autoStartFloor=appScope.state.summaryHold.endIndex+1;
       appScope.state.savedThrough=Math.max(-1,...appScope.state.batches.filter(b=>b.status==='saved').map(b=>b.endIndex).filter(Number.isInteger));
     }
     // Reconcile UI bookkeeping against the committed view after a restart.

@@ -45,7 +45,7 @@ function emptyChatView(status='loading'){
     appScope.dynamicPersona.clear();
     appScope.state.summaryHold=null;
     appScope.workspace=null;appScope.boundScope=null;appScope.boundRefKey=null;appScope.moduleSourceBaseline=null;appScope.modules.clear();
-    appScope.qualitySaved={};appScope.preparedQuality=null;Object.assign(appScope.state,{rawRecords:{},memoryControls:{},quality:null,qualityPlan:null,qualityProgress:'',cards:[],records:{},batches:[],deletedRecords:[],hidden:[],savedThrough:-1,autoStartFloor:1,autoLastIndex:null,sourceStatus:null,progress:'',preview:null,actual:null,status,stale:status==='loading'});
+    appScope.qualitySaved={};appScope.preparedQuality=null;Object.assign(appScope.state,{rawRecords:{},memoryControls:{},quality:null,qualityPlan:null,qualityProgress:'',cards:[],records:{},batches:[],deletedRecords:[],hidden:[],savedThrough:-1,autoStartFloor:1,autoOriginFloor:undefined,autoLastIndex:null,sourceStatus:null,progress:'',preview:null,actual:null,status,stale:status==='loading'});
     appScope.recallChanged({clear:true});
   }
 
@@ -221,7 +221,7 @@ async function open({enable = true, expectedRef, passive=false} = {}) {
     const [ui,hidden,excludedVectors]=await Promise.all([appScope.workspace.read('ui',{savedThrough:-1}),appScope.workspace.read('hidden',[]),appScope.workspace.read('vector-excluded',[])]);
     checkOpen();appScope.vectorExcluded=Array.isArray(excludedVectors)?excludedVectors.filter(id=>typeof id==='string'):[];
     checkOpen();appScope.assertCurrent();Object.assign(appScope.state,{savedThrough:ui.savedThrough??-1,hidden,preview:null,actual:null,stale:false});
-    const autoProgress=await appScope.workspace.read('auto-progress',{startFloor:1});checkOpen();appScope.state.autoStartFloor=Number.isSafeInteger(autoProgress.startFloor)&&autoProgress.startFloor>=0?autoProgress.startFloor:1;appScope.state.autoLastIndex=null;
+    const autoProgress=await appScope.workspace.read('auto-progress',{startFloor:1});checkOpen();appScope.state.autoStartFloor=Number.isSafeInteger(autoProgress.startFloor)&&autoProgress.startFloor>=0?autoProgress.startFloor:1;appScope.state.autoOriginFloor=Number.isSafeInteger(autoProgress.originFloor)&&autoProgress.originFloor>=0?autoProgress.originFloor:undefined;appScope.state.autoLastIndex=null;
     await appScope.migrateWorkspace();
     await appScope.normalizeBatchRanges();
     checkOpen();
@@ -294,9 +294,12 @@ async function open({enable = true, expectedRef, passive=false} = {}) {
   }
 
 async function stop(){appScope.personaCommandVersion++;
+    // Block every wake before cancellation yields; persist the user's stop
+    // through reopen without touching any successful memory or persona config.
+    appScope.automaticPaused=true;
     const stoppedActive=appScope.active,stoppedOperations=[...appScope.operations],stoppedSummary=appScope.activeSummaryOperation;
     appScope.vectorStopped=true;clearTimeout(appScope.vectorTimer);appScope.vectorTimer=null;appScope.vectorJob?.cancel();appScope.abortAll();for(const op of appScope.apiOperations)op.abort();
-    try{await appScope.core.cancelSummary();}catch(error){if(error?.code!=='CANCELED')void appScope.reportError(error,{task:'summary',stage:'ui'});}
+    const canceled=appScope.core.cancelSummary().catch(error=>{if(error?.code!=='CANCELED')void appScope.reportError(error,{task:'summary',stage:'ui'});});
     // A persona transaction can reject or stall while the workspace is
     // switching. Other tasks have already been canceled above; waiting for
     // persona pause is bounded and cannot hold their cancellation hostage.
@@ -316,7 +319,7 @@ async function stop(){appScope.personaCommandVersion++;
     appScope.stopForceTimer?.unref?.();
     if(appScope.boundScope&&(appScope.core.readViewState?.()??appScope.core.state).status!=='invalidated'&&stableStringify((appScope.core.readViewState?.()??appScope.core.state).scope)===stableStringify(appScope.boundScope))appScope.workspace=createWorkspace(appScope.core.workspace());
     appScope.setMessage('正在停止；已有保存结果保留');
-    await Promise.race([appScope.dynamicPersona.pause().catch(error=>void appScope.reportError(error,{task:'persona',stage:'ui'})),new Promise(resolve=>setTimeout(resolve,2000))]);}
+    await Promise.all([canceled,appScope.saveSettings({autoSummaryEnabled:false}),Promise.race([appScope.dynamicPersona.pause().catch(error=>void appScope.reportError(error,{task:'persona',stage:'ui'})),new Promise(resolve=>setTimeout(resolve,2000))])]);}
 
 async function disable(){appScope.enabled=false;appScope.automaticPaused=true;appScope.recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();appScope.setMessage('已暂停插件任务和记忆注入，仍会跟随聊天加载记忆');}
   return Object.freeze({ clearPrompt, wakeChatFollower, startChatTracking, followCurrentChat, rememberModuleSources, sourceEventRelevant, settledHistoryTail, localPersonaHistoryState, open, stop, disable });
