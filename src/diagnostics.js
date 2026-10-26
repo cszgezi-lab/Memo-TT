@@ -119,7 +119,7 @@ export function upstreamErrorHint(value){
   const text=fields.filter(v=>typeof v==='string').map(v=>v.slice(0,4096)).join(' ');
   if(/unsupported (?:parameter|argument)|unrecognized (?:request )?(?:argument|parameter)|unknown (?:parameter|argument)|(?:参数|字段).{0,12}(?:不支持|无法识别)/i.test(text))return 'unsupported_parameter';
   if(/(?:max_tokens|max_completion_tokens).{0,100}(?:at most|maximum|less than|exceed)|(?:输出|回复).{0,12}(?:超限|超过)/i.test(text))return 'output_limit';
-  if(/\b(?:content_filter|content_policy_violation|safety_blocked|blocked by safety|blocked due to safety)\b|(?:内容|安全策略)(?:审查|过滤|拦截|违规)|因安全.{0,6}(?:拦截|阻止)/i.test(text))return 'content_blocked';
+  if(/\b(?:content_filter|content_policy_violation|prohibited_content|safety_blocked|blocked by safety|blocked due to safety)\b|(?:内容|安全策略)(?:审查|过滤|拦截|违规)|因安全.{0,6}(?:拦截|阻止)/i.test(text))return 'content_blocked';
   if(/context_length_exceeded|maximum context length|context (?:window|length|limit).{0,40}(?:exceed|limit)|上下文.{0,12}(?:超限|超过)/i.test(text))return 'context_limit';
   if(/\b(?:timeout|timed out|deadline exceeded|DEADLINE_EXCEEDED)\b|(?:请求|上游|等待|连接)超时/i.test(text))return 'timeout';
   if(/\b(?:overloaded|overload|model is busy|capacity exhausted)\b|(?:模型|服务).{0,4}(?:繁忙|过载)/i.test(text))return 'overloaded';

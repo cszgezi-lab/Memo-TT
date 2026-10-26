@@ -220,7 +220,7 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
         await appScope.workspace.update('summary-batches',rows=>rows.map(b=>b.id===failed.id&&b.operationId===failed.operationId&&b.status==='running'?failed:b),[]).catch(()=>{});
         // A rejected provider request has no newly activated memory. Avoid a
         // full archive/source scan solely to display its failed batch status.
-        if(!['request','read_body','parse_envelope'].includes(error.details?.stage))await appScope.refresh().catch(()=>{});
+        if(!['request','read_body','parse_envelope','parse_content'].includes(error.details?.stage))await appScope.refresh().catch(()=>{});
       }
       appScope.runtimeLog.record({run:diagnosticRun,task:'summary',phase:'queue_remaining',details:{savedBatches:saved,pendingBatches:remainingPlanned}});
       if(op.token===appScope.epoch&&appScope.activeSummaryOperation===op)appScope.summaryFeedback(op.signal.aborted?'info':'error',`${op.signal.aborted?'总结已停止':'总结未完成'}；已保存 ${saved} 批${remainingPlanned?`，另有 ${remainingPlanned} 批排队保留` :''}。${failureText(error)}`,trigger);

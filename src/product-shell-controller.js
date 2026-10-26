@@ -1,4 +1,5 @@
 import {summaryPresetFromRules} from './summary-presets.js';
+import {readCachedFailureResponses} from './summary-response-evidence.js';
 import { normalizeInnerLife } from './character-journal.js';
 import {
   createSummaryBatch,
@@ -933,6 +934,11 @@ export function createProductShellController({
     testConnection,
     setSessionCredential,
     readMemoryView,
+    async exportCachedSummaryFailures(batches,{secrets=[],check:callerCheck=()=>{}}={}){
+      if(!repository||!state.session)return [];
+      const session=state.session,token=currentToken(),check=()=>{if(!tokenValid(token,session))throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});callerCheck();};
+      return readCachedFailureResponses({batches,secrets,check,readTask:id=>repository.readPrivateTask(session.scope,id),readCheckpoint:id=>repository.getCheckpoint(id,session.scope)});
+    },
     async inspectSummaryResume(operationId,{focus}={}){
       if(!repository||!state.session||activeTask)throw new Error('请先打开聊天并等待任务结束');
       const session=state.session,token=currentToken(),check=()=>{if(!tokenValid(token,session))throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});};

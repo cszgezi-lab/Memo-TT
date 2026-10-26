@@ -1,4 +1,5 @@
 import {applySummaryArmor,normalizeSummaryArmor,summaryToolContent} from './summary-armor.js';
+import {parseWithResponseEvidence} from './summary-response-evidence.js';
 import {
   DRAFT_CATEGORIES,
   SUMMARY_OUTPUT_CONTRACT,
@@ -442,6 +443,7 @@ export class SummaryEngine {
     this.summaryArmor=normalizeSummaryArmor(summaryArmor);
     this.model = modelInvoker(model,{armor:this.summaryArmor,preferBuffered,preferStreaming});
     this.supplementModel = supplementModel ? modelInvoker(supplementModel,{armor:this.summaryArmor,preferBuffered,preferStreaming}) : this.model;
+    this.parseResponseEvidence=(raw,options)=>parseWithResponseEvidence(raw,{...options,secrets:[model?.profile?.apiKey,supplementModel?.profile?.apiKey]});
     this.verified = verified;
     this.staged = staged && !verified;
     this.packRequests = packRequests;
@@ -842,6 +844,7 @@ export class SummaryEngine {
       let phase='request';
       const started=this.now();
       const baseDetails={childIndex,startIndex:child.sourceMessages[0]?.index,endIndex:child.sourceMessages.at(-1)?.index,sourceCount:child.sourceMessages.length};
+      const parseEvidence=(answer,options)=>this.parseResponseEvidence(answer,{parse:value=>parseModelResponse(value,options),onFailure:(responseExcerpt,error)=>emit('response_excerpt',{...baseDetails,...errorDiagnostics(error),responseExcerpt},'warning')});
       try {
         throwIfAborted(signal);
         if(this.recoveryEnabled&&this.repository.recoverOperationReceipt){
@@ -929,7 +932,7 @@ export class SummaryEngine {
               const coverage=coverageState(bound.coverage,sourceRefsFor(child));
               if(!coverage.complete){const error=new ValidationError('阶段未完整处理所选楼层',{coverage});error.code='COVERAGE_INCOMPLETE';throw error;}
             };
-            raw=await runSummaryStages({request,cached:prior?.stages,invoke:(r,options)=>{phase='request';if(!options?.extra)recoveryCalls=0;return invoke(r,baseDetails,options);},parse:(r,stage)=>{phase='response';return parseModelResponse(r,{allowToolTransport:this.summaryArmor.antiTruncation,onMetadata:metadata=>emit('response',{...baseDetails,...metadata,summaryStage:stage})});},validateNarrative:checkCoverage,validateDetails:checkCoverage,
+            raw=await runSummaryStages({request,cached:prior?.stages,invoke:(r,options)=>{phase='request';if(!options?.extra)recoveryCalls=0;return invoke(r,baseDetails,options);},parse:(r,stage)=>{phase='response';return parseEvidence(r,{allowToolTransport:this.summaryArmor.antiTruncation,onMetadata:metadata=>emit('response',{...baseDetails,...metadata,summaryStage:stage})});},validateNarrative:checkCoverage,validateDetails:checkCoverage,
               save:async stages=>{
                 const patch={binding:resultBinding,stages,retryModel:true};
                 this.repository.retainPrivateResponse?.(child.scope,child.operationId,patch);
@@ -944,7 +947,7 @@ export class SummaryEngine {
         }
         throwIfAborted(signal);
         phase='response';
-        const parseResponse=answer=>parseModelResponse(answer,{allowToolTransport:this.summaryArmor.antiTruncation,onMetadata:metadata=>emit('response',{...baseDetails,...metadata,elapsedMs:this.now()-started}),onNormalize:details=>emit('normalize',{...baseDetails,...details},details.duplicateEmptyModules?'warning':'success')});
+        const parseResponse=answer=>parseEvidence(answer,{allowToolTransport:this.summaryArmor.antiTruncation,onMetadata:metadata=>emit('response',{...baseDetails,...metadata,elapsedMs:this.now()-started}),onNormalize:details=>emit('normalize',{...baseDetails,...details},details.duplicateEmptyModules?'warning':'success')});
         let parsed;
         try{parsed=await parseResponse(raw);}
         catch(error){
@@ -1016,7 +1019,7 @@ export class SummaryEngine {
             const review=verificationRequest(reviewRequest,output,{validationIssues,pending:progress?.pending??[]});
             if(projectReview)review.instructions+='\n'+NARRATIVE_READING_RULE;
             const apply=async response=>{
-              const changes=await parseModelResponse(response,{allowToolTransport:this.summaryArmor.antiTruncation,onMetadata:metadata=>emit('response',{...baseDetails,...metadata,purpose:'summary_verification'})});
+              const changes=await parseEvidence(response,{allowToolTransport:this.summaryArmor.antiTruncation,onMetadata:metadata=>emit('response',{...baseDetails,...metadata,purpose:'summary_verification'})});
               const result=applyVerificationProgress(output,changes,review);
               const value=normalizeDraftMetadata(result.output,'summary_verification');
               return {changes,value,pending:result.pending,accepted:result.accepted,noteCoverage:result.noteCoverage};
@@ -1094,7 +1097,7 @@ export class SummaryEngine {
             emit('partial_repair',{...baseDetails,...safeLogDetails(error.details),purpose:'floor_repair',repairFields:missing.length},'warning');
             let fixed;
             const repairRaw=await invoke(missingFloorRequest(request,bundle,missing),baseDetails,{extra:true});
-            try{fixed=await parseModelResponse(repairRaw,{allowToolTransport:this.summaryArmor.antiTruncation,onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata})});}
+            try{fixed=await parseEvidence(repairRaw,{allowToolTransport:this.summaryArmor.antiTruncation,onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata})});}
             catch(repairError){
               if(signal?.aborted)throw repairError;
               emit('repair_failed',{...baseDetails,...errorDiagnostics(repairError)},'error');
@@ -1155,7 +1158,7 @@ export class SummaryEngine {
           const repairRequest=referenceRepairRequest(request,bundle,validation);
           if(repairRequest){
             emit('partial_repair',{...baseDetails,purpose:'reference_repair',...safeLogDetails(validation)},'warning');
-            const fixed=await parseModelResponse(await invoke(repairRequest,baseDetails,{extra:true}),{allowToolTransport:this.summaryArmor.antiTruncation,onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata})});
+            const fixed=await parseEvidence(await invoke(repairRequest,baseDetails,{extra:true}),{allowToolTransport:this.summaryArmor.antiTruncation,onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata})});
             const repaired=applyReferenceRepair(bundle,repairRequest,fixed);
             if(repaired){const checked=validateDraftBundle(repaired,validationOptions);if(checked.valid){bundle=repaired;validation=checked;await keepResponse(bundle);emit('repair_complete',{...baseDetails,purpose:'reference_repair'},'success');}}
           }
@@ -1177,7 +1180,7 @@ export class SummaryEngine {
             const repairRaw=await invoke(repairRequest,baseDetails,{extra:this.recoveryEnabled});
             throwIfAborted(signal);
             phase='repair_response';
-            const correction=await parseModelResponse(repairRaw,{allowToolTransport:this.summaryArmor.antiTruncation,onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata,elapsedMs:this.now()-repairStarted})});
+            const correction=await parseEvidence(repairRaw,{allowToolTransport:this.summaryArmor.antiTruncation,onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata,elapsedMs:this.now()-repairStarted})});
             const corrected=applyEnumCorrections(bundle,repairTargets,correction,{onRejected:repairRejection=>emit('repair_failed',{...baseDetails,repairRejection},'warning')});
             if(corrected){
               const checked=validateDraftBundle(corrected,validationOptions);
@@ -1198,7 +1201,7 @@ export class SummaryEngine {
             try{
               const repairRaw=await invoke(categoryRepairRequest(request,bundle,categories,validation),baseDetails,{extra:true});
               phase='repair_response';
-              const fixed=await parseModelResponse(repairRaw,{allowToolTransport:this.summaryArmor.antiTruncation,allowArray:categories.length===1,onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata})});
+              const fixed=await parseEvidence(repairRaw,{allowToolTransport:this.summaryArmor.antiTruncation,allowArray:categories.length===1,onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata})});
               // A number of OpenAI-compatible providers ignore the requested
               // object shape for a one-category repair and return the array
               // itself. It is unambiguous in this branch, so wrap it before

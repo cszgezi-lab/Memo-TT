@@ -53,7 +53,15 @@ const application={previewSummary: appScope.previewSummary,splitSummaryBatch:(..
     },
     startChatTracking: appScope.startChatTracking,followCurrentChat: appScope.followCurrentChat,reviewMemory: appScope.reviewMemory,previewQuality: appScope.previewQuality,inspectQualityRecord: appScope.inspectQualityRecord,saveQualityRecord: appScope.saveQualityRecord,undoQuality: appScope.undoQuality,readViewState: appScope.readViewState,
     reviewMemoryConsistency: appScope.reviewMemoryConsistency,stopMemoryConsistency:()=>appScope.retrospectiveOperation?.abort(),undoMemoryConsistency: appScope.undoMemoryConsistency,
-    reportError: appScope.reportError,loadRuntimeLog:()=>appScope.runtimeLog.load(),exportRuntimeLog:async options=>{const snapshot=await appScope.runtimeLog.export(options);return {...snapshot,pendingDiagnostics:appScope.diagnosticJobs.size};},clearRuntimeLog:async()=>{await appScope.flushDiagnostics();return appScope.runtimeLog.clear();},
+    reportError: appScope.reportError,loadRuntimeLog:()=>appScope.runtimeLog.load(),exportRuntimeLog:async options=>{
+      const snapshot=await appScope.runtimeLog.export(options);let cachedFailureResponses=[],cachedFailureStatus='unavailable';
+      if(appScope.workspace?.isCurrent())try{
+        const token=appScope.epoch,check=()=>appScope.assertCurrent(token);check();
+        const batches=await appScope.workspace.read('summary-batches',[]);check();
+        cachedFailureResponses=await appScope.core.exportCachedSummaryFailures(batches,{check,secrets:Object.values(appScope.keys??{})});check();cachedFailureStatus='read';
+      }catch{/* an unavailable cache must not block the ordinary log export */}
+      return {...snapshot,pendingDiagnostics:appScope.diagnosticJobs.size,cachedFailureStatus,cachedFailureResponses};
+    },clearRuntimeLog:async()=>{await appScope.flushDiagnostics();return appScope.runtimeLog.clear();},
     async exportProjectDiagnostics(){
       const token=appScope.epoch;appScope.assertCurrent(token);const scope=clone(appScope.boundScope),check=()=>appScope.assertCurrent(token);
       return createProjectDiagnostics({version:PRODUCT_VERSION,check,readBackup:()=>application.exportBackup(),
