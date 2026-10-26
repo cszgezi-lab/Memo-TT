@@ -137,7 +137,7 @@ export function createPersonaWorldbook({host=globalThis,check=()=>{},context=()=
     // Bound retained request contexts; never grow with the entire chat archive.
     while(markers.size>128)markers.delete(markers.keys().next().value);
   }
-  async function finalize(payload,profiles){
+  async function finalize(payload,profiles,{textForProfile=p=>p.text}={}){
     const ownership=loadedOwnership;loadedOwnership=null;
     if(!Array.isArray(payload?.messages))return;
     const currentCard=personaCardSource(mvuContext(host)??{}),rejectedSources=new Set(profiles.filter(p=>p.bindings?.some(b=>b.sourceKind==='character_card'&&!currentCard.spans.some(s=>s.cardId===b.cardId&&s.field===b.field&&s.id===b.id&&s.hash===b.hash))).map(p=>p.id));
@@ -167,16 +167,18 @@ export function createPersonaWorldbook({host=globalThis,check=()=>{},context=()=
     if(!payload.messages.some(m=>typeof m.content==='string'&&m.content.includes('[[MEMO_TT_PERSONA:')))return {injected:[],rejectedSources:[...rejectedSources],missingCardProfiles:missingCardProfiles.size,stalePreparedProfiles:stalePreparedProfiles.size};
     const mode=stageMode();let data={};if(mode==='strict'&&profiles.some(p=>p.bindings?.some(b=>b.stage!=='static')))try{data=await stageData({foreground:true});check();}catch{data=null;}
     const valid=profiles.filter(p=>!rejectedSources.has(p.id)&&p.bindings?.length&&(mode!=='strict'||p.bindings.every(b=>b.stage==='static'||data&&personaSpans({book:b.book,uid:b.uid,name:b.name,content:b.entryContent},data).some(s=>s.id===b.id)))),byId=new Map(valid.map(p=>[p.id,p])),used=new Set();
-    let replacedFragments=0,restoredFragments=0,replacedCardFields=0;const replacedEntries=new Set();
+    let replacedFragments=0,restoredFragments=0,replacedCardFields=0;const replacedEntries=new Set(),insertedTexts=[];
     for(const m of payload.messages)if(typeof m.content==='string')m.content=m.content.replace(markerPattern(),(_all,token,id,spanId)=>{
       const prepared=markers.get(token),p=byId.get(id),frozen=prepared?.profiles.get(id),key=`${id}:${spanId}`;
       const source=prepared?.cardSources?.get(key),sourceValid=!source||currentCard.cardId===source.cardId&&currentCard.spans.some(s=>s.field===source.field&&s.hash===source.hash);
       if(prepared?.context!==contextKey()||prepared?.mode!==mode||!p||!frozen||sha256(p)!==frozen||!sourceValid){if(!sourceValid)rejectedSources.add(id);restoredFragments++;return prepared?.originals.get(key)??'';}
       replacedFragments++;replacedEntries.add(prepared.entries.get(key));
       if(source)replacedCardFields++;
-      if(used.has(id))return '';used.add(id);return renderText(`【${p.name}·当前动态人设，依据至 #${p.through}；更新楼层后的正文优先${mode==='strict'?'':'；剧情主导，MVU仅作参考'}】\n${p.text}`);
+      if(used.has(id))return '';used.add(id);
+      const text=renderText(`【${p.name}·当前动态人设，依据至 #${p.through}；更新楼层后的正文优先${mode==='strict'?'':'；剧情主导，MVU仅作参考'}】\n${textForProfile(p)}`);
+      insertedTexts.push(text);return text;
     });
-    return {injected:[...used],replacedEntries:replacedEntries.size,replacedFragments,restoredFragments,replacedCardFields,rejectedSources:[...rejectedSources],missingCardProfiles:missingCardProfiles.size,stalePreparedProfiles:stalePreparedProfiles.size};
+    return {injected:[...used],replacedEntries:replacedEntries.size,replacedFragments,restoredFragments,replacedCardFields,rejectedSources:[...rejectedSources],missingCardProfiles:missingCardProfiles.size,stalePreparedProfiles:stalePreparedProfiles.size,insertedTexts};
   }
   return {read,mirror,applyLoaded,attachPromptManager,applyCardPrompt,stageData,finalize,foreignRequest,renderText};
 }

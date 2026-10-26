@@ -36,5 +36,8 @@ export function mountInjectionLog({panel,app,run,host,download}){
   for(const [sel,delta] of [['[data-injection-prev]',-1],['[data-injection-next]',1]])$(sel)?.addEventListener('click',()=>{page+=delta;paint(current??readViewState(app));});
   $('[data-injection-clear]')?.addEventListener('click',()=>run(async()=>{if(await host.confirm?.('只清空本聊天的注入日志？已保存记忆、总结和聊天原文不变。'))await app.clearInjectionLog();}));
   $('[data-injection-export]')?.addEventListener('click',()=>run(async()=>{const includeContent=$('[data-injection-content]')?.checked;if(includeContent&&!await host.confirm?.('导出文件将包含剧情查询、记忆正文及人物名称。确认后再分享给他人。'))return;await download(await app.exportInjectionLog({includeContent}),'拾忆-注入日志.json');}));
+  $('[data-injection-export-recent]')?.addEventListener('click',event=>run(async()=>{
+    await download(await app.exportRecentRecall(),'Memo-最近20次召回.json');
+  },{name:'exportRecentRecall',button:event.currentTarget}));
   return {paint};
 }

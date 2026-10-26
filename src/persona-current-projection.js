@@ -4,7 +4,7 @@ import {withoutPrivateSpeech} from './memory-evidence.js';
 
 // Derived views only. The saved source, DIY prose and immutable checkpoints
 // remain recoverable. Do not guess semantic equivalence between different facts.
-const cache=new WeakMap(),frameCache=new WeakMap();
+const cache=new WeakMap(),frameCache=new WeakMap(),directiveBodies=new WeakMap();
 const stagePattern=/(?:国中|初中|高中|大学)[一二三四1-4]年级/g;
 const sameStage=s=>s.replace('国中','初中').replace(/[1234]/g,c=>'一二三四'[Number(c)-1]);
 const sourceStage='(?:(?:国中|初中|高中|大学)[一二三四1-4](?:年级|年)?|[国初高大][一二三四1-4])';
@@ -127,11 +127,15 @@ export function applyUserDirectives(profile){
   if(!lines.length)return profile;
   const head=`【强调】\n这里的句子优先于原书、语料和后文概括。冲突时只照这里做。\n${lines.join('\n')}`;
   const tail=`【强调 · 收束】\n和上面的档案冲突时，仍以这几句为准：\n${lines.join('\n')}`;
-  let text=String(profile.text??'');
-  if(text.startsWith(head))text=text.slice(head.length).replace(/^\n+/u,'');
-  if(text.endsWith(tail))text=text.slice(0,-tail.length).replace(/\n+$/u,'');
-  return {...profile,text:[head,text,tail].filter(Boolean).join('\n\n')};
+  const text=directiveBodies.get(profile)??String(profile.text??'');
+  const projected={...profile,text:[head,text,tail].filter(Boolean).join('\n\n')};
+  // Keep presentation weighting out of the outgoing dossier: the request
+  // owns one separate emphasis message. Only strip wrappers created here,
+  // never search an arbitrary saved/manual body for a matching heading.
+  directiveBodies.set(projected,text);
+  return projected;
 }
+export const personaRequestText=profile=>directiveBodies.get(profile)??profile.text;
 export function projectCurrentPersona(profile,frame=null){
  if(!profile?.composition||profile.manual||profile.locked)return applyUserDirectives(profile);
  const endFloor=Number.isSafeInteger(profile.through)?profile.through:Infinity;

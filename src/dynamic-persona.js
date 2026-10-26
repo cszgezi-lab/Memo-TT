@@ -15,7 +15,7 @@ import {rebindPersonaSources} from './persona-source-rebind.js';
 import {editPersonaCasting,inferPersonaCasting,PERSONA_CASTING_RULE,rememberPersonaCasting,applyPersonaCasting,personaAttentionWeight,weightedPersonaMaterials} from './persona-casting.js';
 import {PERSONA_CHANGE_CHECK_RULE,personaReviewedThrough} from './persona-change-check.js';
 import {PERSONA_EDIT_RULE,PERSONA_STYLE_RETIRE_RULE,PERSONA_QUOTED_PROSE_RULE,retirablePersonaStyle,personaStyleGroups,personaProjectedSourceParts,personaNoteParts,markPersonaQuoteParts,personaProseQuotes,personaSourcePartText,safePersonaQuotedProse} from './persona-edit-evidence.js';
-import {projectCurrentPersona,personaTimelineFrame} from './persona-current-projection.js';
+import {projectCurrentPersona,personaTimelineFrame,personaRequestText} from './persona-current-projection.js';
 import {PERSONA_COMPOSITION_RULE,PERSONA_OUTPUT_CHECK_RULE,personaParts,personaMaterials,personaReviewFocus,composePersona,personaSpokenAliases,personaCompositionText,currentPersonaExamples} from './persona-composition.js';
 import {createPersonaRefinement,personaRefinementRequest} from './persona-refinement.js';
 import {applyPersonaDerivedUpdates,parsePersonaDerivedUpdates} from './persona-derived-edits.js';
@@ -1394,14 +1394,18 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     const identities=personaIdentity({previous:[...available,...directiveOnly],dictionary:dictionary(),aliases:settings().aliases,source:query});
     const selectedPeople=new Set(identities.mentions(query).map(p=>p.key));
     const relevant=available.filter(p=>selectedPeople.has(foldName(p.name)));
-    const finalized=await worldbook.finalize?.(payload,relevant),rejected=new Set(finalized?.rejectedSources??[]),used=new Set((finalized?.injected??[]).filter(id=>!rejected.has(id)));
+    const finalized=await worldbook.finalize?.(payload,relevant,{textForProfile:personaRequestText}),rejected=new Set(finalized?.rejectedSources??[]),used=new Set((finalized?.injected??[]).filter(id=>!rejected.has(id)));
     if(bound!==currentWorkspace||!bound?.isCurrent())return;
     const extras=available.filter(p=>!rejected.has(p.id)&&!used.has(p.id)&&selectedPeople.has(foldName(p.name))&&(settings().dynamicPersonaMvuMode!=='strict'||!p.bindings?.length));
-    if(extras.length)payload.messages.splice(Math.max(0,payload.messages.length-1),0,{role:'system',content:'【当前路线动态人设补充】根据已发生剧情持续更新的完整人物档案；最新正文与每份档案顶部的“当前剧情变化”优先，不因后文保留了较早关系历程、旧口吻或底色就把人物演回旧阶段；'+(settings().dynamicPersonaMvuMode==='strict'?'遵守当前 MVU 阶段边界':'MVU 数值只作参考，不因数值未变否定剧情发展')+'；不赋予其他角色额外知情。\n'+extras.map(p=>`${p.name}（依据至 #${p.through}）：\n${p.text}`).join('\n\n')});
+    const insertedTexts=[...(finalized?.insertedTexts??[])];
+    if(extras.length){
+      let content='【当前路线动态人设补充】根据已发生剧情持续更新的完整人物档案；最新正文与每份档案顶部的“当前剧情变化”优先，不因后文保留了较早关系历程、旧口吻或底色就把人物演回旧阶段；'+(settings().dynamicPersonaMvuMode==='strict'?'遵守当前 MVU 阶段边界':'MVU 数值只作参考，不因数值未变否定剧情发展')+'；不赋予其他角色额外知情。\n'+extras.map(p=>`${p.name}（依据至 #${p.through}）：\n${personaRequestText(p)}`).join('\n\n');
+      if(worldbook.renderText)content=worldbook.renderText(content);
+      payload.messages.splice(Math.max(0,payload.messages.length-1),0,{role:'system',content});insertedTexts.push(content);
+    }
     const selected=available.filter(p=>used.has(p.id)||extras.includes(p));
-    const rules=[...selected,...directiveOnly.filter(p=>selectedPeople.has(foldName(p.name)))].flatMap(p=>(p.userDirectives??[]).filter(line=>String(line??'').trim()).map(line=>`${p.name}：${String(line).trim()}`));
-    if(rules.length)payload.messages.splice(Math.max(0,payload.messages.length-1),0,{role:'system',content:'【强调】只有这几句。和原书、旧态度或后文概括冲突时，只照这里做。\n'+rules.join('\n')});
-    if(worldbook.renderText)for(const m of payload.messages)if(m.role==='system'&&typeof m.content==='string'&&m.content.startsWith('【当前路线动态人设补充】'))m.content=worldbook.renderText(m.content);
+    const rules=[...new Set([...selected,...directiveOnly.filter(p=>selectedPeople.has(foldName(p.name)))].flatMap(p=>(p.userDirectives??[]).filter(line=>String(line??'').trim()).map(line=>`${p.name}：${String(line).trim()}`)))];
+    if(rules.length){const content='【强调】只有这几句。和原书、旧态度或后文概括冲突时，只照这里做。\n'+rules.join('\n');payload.messages.splice(Math.max(0,payload.messages.length-1),0,{role:'system',content});insertedTexts.push(content);}
     const audit=view.worldbook?.audit??[];
     const recallProfile=p=>{
       const reviewedThrough=personaReviewedThrough(p);
@@ -1410,9 +1414,9 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       const currentAttitudes=p.manual||p.locked?[]:(p.composition?.development??[])
         .filter(d=>d.phase!=='historical'&&typeof d.target==='string'&&d.target.trim()&&typeof d.after==='string'&&d.after.trim()&&Number.isInteger(d.floor)&&d.floor>=0&&Number.isInteger(reviewedThrough)&&d.floor<=reviewedThrough)
         .map(d=>({target:d.target,scope:d.scope??'',floor:d.floor}));
-      return {id:p.id,name:p.name,through:p.through,reviewStatus:p.composition?.changeCheck?.status,reviewedThrough,currentAttitudes,chars:p.text.length,mode:used.has(p.id)?'replacement':'supplement'};
+      return {id:p.id,name:p.name,through:p.through,reviewStatus:p.composition?.changeCheck?.status,reviewedThrough,currentAttitudes,chars:personaRequestText(p).length,mode:used.has(p.id)?'replacement':'supplement'};
     };
-    view={...view,lastInjection:{at:now(),people:selected.map(p=>p.name),replaced:used.size,supplemental:extras.length,coverage:{replacedEntries:finalized?.replacedEntries??0,replacedFragments:finalized?.replacedFragments??0,restoredFragments:finalized?.restoredFragments??0,replacedCardFields:finalized?.replacedCardFields??0,rejectedProfiles:rejected.size,owned:audit.filter(a=>a.status==='owned').length,shared:audit.filter(a=>a.status==='shared').length,unresolved:audit.filter(a=>['unresolved','unsupported'].includes(a.status)).length},profiles:selected.map(recallProfile),text:selected.map(p=>`${p.name}：\n${p.text}`).join('\n\n')}};emit();
+    view={...view,lastInjection:{at:now(),people:selected.map(p=>p.name),replaced:used.size,supplemental:extras.length,coverage:{replacedEntries:finalized?.replacedEntries??0,replacedFragments:finalized?.replacedFragments??0,restoredFragments:finalized?.restoredFragments??0,replacedCardFields:finalized?.replacedCardFields??0,rejectedProfiles:rejected.size,owned:audit.filter(a=>a.status==='owned').length,shared:audit.filter(a=>a.status==='shared').length,unresolved:audit.filter(a=>['unresolved','unsupported'].includes(a.status)).length},profiles:selected.map(recallProfile),prepared:insertedTexts.length>0,textKind:'inserted_messages_and_fragments',text:insertedTexts.join('\n\n')}};emit();
     return clone(view.lastInjection);
   }
   return {load,reconcileSaved,clear,inspect,inspectWorldbook,previewManual,createManual,resumeManual,resumeManualBatch,splitManualBatch,previewApplyManualPrefix,applyManualPrefix,pauseManual,discardManual,wake,process,stop,pause,resume,setStart,edit,deleteProfiles,setCasting,setDirectives,draftPersonDirectives,setPartHistorical,bind,merge,undo,add,profiles,inject,syncMirror,previewDeleteBatch,deletePersonaBatch,restorePersonaBatch,draftDirectives,previewReview,startReview,manageReview,applyReview,reviewMarkdown:()=>personaRefinementMarkdown(data.refinement),interruptReview:()=>Promise.all([refinement.interrupt(),factualReview.interrupt()]),interruptFactReview:()=>factualReview.interrupt(),retryReview:()=>refinement.retry(),processReview:()=>refinement.process(),processFactReview:()=>factualReview.process(),export:()=>clone(data),async dispose(){disposed=true;refinement.dispose();await factualReview.dispose();stop({preserveManual:true});if(job)job.abort();},get state(){return {...clone(publicData()),...view,busy:Boolean(job),lastIndex,plan:plan()};}};

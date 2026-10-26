@@ -17,7 +17,7 @@ import { ProviderClient, observeProviderRequests, scheduleProviderRequests } fro
 import {createProviderScheduler,shouldPauseProviderBatch,backgroundRetryDelay} from './provider-scheduler.js';
 import { errorDiagnostics, jsonFailure,installDiagnosticBoundary,diagnosticRequestId } from './diagnostics.js';
 import { SummaryResponseError } from './errors.js';
-import { memoryCards, memoryCardsAsync, recallMemory, readable, recordDescription, selectRecallCards, prepareRecallIndex, relevantPassage } from './product-memory.js';
+import { memoryCards, memoryCardsAsync, recallMemory, readable, recordDescription, selectRecallCards, selectRecallCardsAsync, prepareRecallIndex, relevantPassage } from './product-memory.js';
 import { RecallIndexCache } from './recall-cache.js';
 import {rerankDocument,createRecallLaneBackoff} from './product-recall-policy.js';
 import { ProductVectorCache, vectorNorm, vectorIndexCoverage } from './product-vector-cache.js';
@@ -47,7 +47,7 @@ import {manualQualityFields} from './product-memory-quality.js';
 import {RETROSPECTIVE_STORE_KEY,projectRetrospectiveRecords} from './product-memory-retrospective.js';
 import {runMemoryRetrospective,undoMemoryRetrospective,retrospectiveEntries,retrospectiveState} from './product-memory-retrospective-controller.js';
 import {validateKnowledgeReview} from './product-knowledge-review.js';
-import { createInjectionLog } from './product-injection-log.js';
+import { createInjectionLog, injectionRequestMetadata } from './product-injection-log.js';
 import { ASSISTANT_SKILLS, assistantSkillCatalog, readAssistantSkill, assistantSettings,assistantBootstrap } from './product-assistant-skills.js';
 import { MERGE_STORE_KEY, MERGE_JUDGE_PROMPT, mergeJobs, mergeDecision, mergeJudgeInput, validateMergeVote, projectMergedCards, sameMergeSnapshot, eventFingerprint } from './product-event-merge.js';
 
@@ -127,7 +127,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(!hostAdapter.getStore)throw new Error('宿主没有提供全局扩展存储');
     return hostAdapter.getStore({scope:'extension'});
   };
-  const apiSettings=createGlobalSettings({getStore:globalStore,onApply:settings=>{const recallSettingsChanged=stableStringify({...core.settings,narrativeExtraction:''})!==stableStringify({...settings,narrativeExtraction:''});core.useGlobalSettings(settings);core.setSessionCredential(effectiveKeys().summary);if(recallSettingsChanged)recallChanged({vectors:true});notify();}});
+  const apiSettings=createGlobalSettings({getStore:globalStore,onApply:settings=>{const recallSettingsChanged=stableStringify({...core.settings,narrativeExtraction:''})!==stableStringify({...settings,narrativeExtraction:''}),readingChanged=core.settings.narrativeExtraction!==settings.narrativeExtraction;core.useGlobalSettings(settings);core.setSessionCredential(effectiveKeys().summary);if(recallSettingsChanged)recallChanged({vectors:true});else if(readingChanged)recallChanged();notify();}});
   const credentials=createCredentialStore({getStore:globalStore});
   let autoRunning=false,personaLaunch=null,personaCommandVersion=0;
   const state = { credentialSaved:{},credentialErrors:{}, modules:[],moduleSnapshots:[],moduleCurrent:[],mvuPaths:[],mvuStatus:'no_chat', status: 'unbound', message: '开始总结时自动读取 TT 当前聊天', cards: [], documents: [], history: [], batches: [], records: {}, conversations: [], conversationId: 'main', proposal: null, lastApplied: null, draft: '', preview: null, actual: null, progress: '', savedThrough: -1, hidden: [], stale: false };
@@ -341,7 +341,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     state.batchVectors={};
     if(!disposed&&core.settings.vectorEnabled&&workspace?.isCurrent())vectorTimer=setTimeout(()=>{vectorTimer=null;void refreshVectorStatus({schedule:scheduleVectors});},250);
   }
-  function vectorCards({all=false}={}){return selectRecallCards([...state.cards,...knowledgeCache.filter(c=>!state.hidden.includes(c.id))],core.settings).filter(c=>c.vectorEligible!==false&&(all||!vectorExcluded.includes(c.id)));}
+  function vectorCards({all=false}={}){return selectRecallCards([...state.cards,...knowledgeCache.filter(c=>!state.hidden.includes(c.id))],core.settings,{projectSource:false}).filter(c=>c.vectorEligible!==false&&(all||!vectorExcluded.includes(c.id)));}
   async function combinedVectorEntries(bound,key,{globalKey=key,signal}={}){
     const local=await vectorCache.load(bound,key,signal);
     if(!core.settings.knowledgeEnabled||!knowledgeCache.some(c=>c.vectorEligible!==false))return local;
@@ -844,7 +844,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(patch.dynamicPersonaEnabled===false)await dynamicPersona.pause();
     let readingMessage=null;
     if(Object.hasOwn(valid,'narrativeExtraction')){
-      readingMessage='标签已保存；下次总结选中楼层时使用。聊天原文和已有结果保留。';
+      readingMessage='标签已保存；下次总结和召回原文使用新规则。聊天原文和已有结果保留。';
       state.feedback={id:++feedbackSequence,kind:'chat',level:'success',text:readingMessage};
     }
     queueAutomaticSummary();dynamicPersona.wake();
@@ -1881,7 +1881,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       const name=mvuContext(host)?.name1;
       if(typeof name==='string'&&name.length<=160)playerName=name.trim();
     }catch{/* Optional identity unavailable: preserve ordinary recall and uncertainty. */}
-    const result = await recallMemory(cards, lookup, {...settings,storyDate:clock.date??'',sceneClock:clock}, { ...(online ? await retrievalAdapters(selectRecallCards(cards, settings)) : {}),signal:op.signal, indexCache: recallCache, scopeKey: stableStringify(boundScope), revision, dictionary:snapshot?.dictionary??activeDictionary(),focusQuery:query,ordinaryQuery:context?[query,context].join('\n'):query,characterQuery:[query,characterContext].filter(Boolean).join('\n'),dossierPeople,dossierProfiles,...(settings.skillEvidenceEnabled===true?{playerName}:{} ) });
+    const result = await recallMemory(cards, lookup, {...settings,storyDate:clock.date??'',sceneClock:clock}, { ...(online ? await retrievalAdapters(await selectRecallCardsAsync(cards, settings,{signal:op.signal})) : {}),signal:op.signal, indexCache: recallCache, scopeKey: stableStringify(boundScope), revision, dictionary:snapshot?.dictionary??activeDictionary(),focusQuery:query,ordinaryQuery:context?[query,context].join('\n'):query,characterQuery:[query,characterContext].filter(Boolean).join('\n'),dossierPeople,dossierProfiles,...(settings.skillEvidenceEnabled===true?{playerName}:{} ) });
     result.sceneClock=clock;
     result.trace.timings.backgroundWaitMs=backgroundWaitMs;
     if(backgroundFallback){result.degraded=true;result.trace.vector={status:'skipped',reason:'background_pending'};}
@@ -1892,8 +1892,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function inject(payload,{dossierPeople=[],dossierProfiles=[],personaInjection,preparation=injectionTiming(host.document),recallQuery:sourceQuery,sceneMessages:sourceSceneMessages}={}) {
     if (!payload || !Array.isArray(payload.messages) || injectedPayloads.has(payload)) return;
     const log=injectionLog,started=Date.now(),initialToken=epoch;
-    let querySource='unknown';
-    const audit=(status,options={})=>{const stages=preparation.finish();if(log&&core.settings.injectionLogEnabled)log.append({status,persona:personaInjection,preparation:stages,querySource,budgetUnits:core.settings.retrievalBudgetUnits,elapsedMs:Date.now()-started,...options});};
+    let querySource='unknown',request=injectionRequestMetadata(payload,sourceSceneMessages,sourceQuery);
+    const audit=(status,options={})=>{const stages=preparation.finish();if(log&&core.settings.injectionLogEnabled)log.append({status,request,persona:personaInjection,preparation:stages,querySource,budgetUnits:core.settings.retrievalBudgetUnits,elapsedMs:Date.now()-started,...options});};
     if(!enabled||!core.settings.injectionEnabled){injectedPayloads.add(payload);audit('disabled');return;}
     if(state.stale||!workspace?.isCurrent()){injectedPayloads.add(payload);audit(state.stale?'stale':'unavailable');return;}
     if(currentMemoryMutation()){injectedPayloads.add(payload);audit('changed');return;}
@@ -1910,6 +1910,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(!sourceQuery&&!sourceSceneMessages)try{sceneMessages=await core.sceneMessages?.()??[];}catch{/* Only the current user turn and manual fallback remain safe. */}
     const recallQuery=sourceQuery??sceneRecallQuery(messages,sceneMessages);
     const {intent:query,context,characterContext}=recallQuery;querySource=recallQuery.source;
+    request=injectionRequestMetadata(payload,sceneMessages,recallQuery);
     if(!sourceQuery)preparation.mark('sourceMs');
     const diagnosticRun=await runtimeLog.start('recall');
     try {
@@ -2343,6 +2344,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     reviewMemoryConsistency,stopMemoryConsistency:()=>retrospectiveOperation?.abort(),undoMemoryConsistency,
     reportError,loadRuntimeLog:()=>runtimeLog.load(),exportRuntimeLog:async options=>{const snapshot=await runtimeLog.export(options);return {...snapshot,pendingDiagnostics:diagnosticJobs.size};},clearRuntimeLog:async()=>{await flushDiagnostics();return runtimeLog.clear();},
     async exportInjectionLog(options){assertCurrent();return injectionLog.export(options);},
+    async exportRecentRecall(){const token=epoch;assertCurrent(token);const data=await injectionLog.exportRecentRecall();assertCurrent(token);return data;},
     async clearInjectionLog(){assertCurrent();await injectionLog.clear();},
     async removeInjectionLog(id){assertCurrent();await injectionLog.remove(id);},
     async saveDictionaryEntry(input){await loadApiSettings();let aliases=core.settings.aliases;

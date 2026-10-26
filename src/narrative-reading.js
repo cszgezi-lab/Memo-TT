@@ -3,10 +3,22 @@ import {readNarrative} from './narrative-extraction.js';
 
 // A reading projection, never a replacement of stored sources. Stable pN
 // indexes continue to address the original safe paragraphs, even after filters.
-export function narrativeReading(source,config='',{sourceIds=true}={}){
+export function narrativeReading(source,config='',{sourceIds=true,excludedRanges=[]}={}){
   let regexConfig=false;
   try{regexConfig=(typeof config==='string'?JSON.parse(config):config)?.version===2;}catch{}
   const base=qualitySourceSegments(source,{includeIds:sourceIds}),safe=qualitySourceSegments(source,{includeStructural:true,includeIds:sourceIds}),result=readNarrative(source,config,regexConfig?undefined:safe);
+  // Additional consumer-specific exclusions intersect an already selected
+  // reading. Regexes still see the original source; no replacement can create
+  // a new match, and retained slices keep their original offsets and bytes.
+  if(excludedRanges.length){
+    const subtract=segments=>segments.flatMap(segment=>{
+      let spans=[[segment.start,segment.end]];
+      for(const [a,b] of excludedRanges)spans=spans.flatMap(([s,e])=>b<=s||a>=e?[[s,e]]:[[s,Math.min(a,e)],[Math.max(b,s),e]].filter(([x,y])=>x<y));
+      return spans.map(([start,end])=>({...segment,start,end,text:source.text.slice(start,end)}));
+    });
+    result.segments=subtract(result.segments);
+    result.structuralContext=subtract(result.structuralContext??[]);
+  }
   const regexReading=result.configVersion===2;
   const parts=[];
   for(let i=0;i<base.length;i++){
