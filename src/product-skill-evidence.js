@@ -37,17 +37,18 @@ function oversizedRenderInput(record, remainingUnits) {
  * Ownership and topic overlap establish relevance, not learning or mastery.
  * The supplied renderer owns the existing provenance/condition presentation.
  */
-export function skillEvidencePacket({ playerName = '', query = '', candidates = [], currentAttributes = [], aliases = [], render, budgetUnits = MAX_UNITS } = {}) {
+export function skillEvidencePacket({ playerName = '', query = '', candidates = [], currentAttributes = [], aliases = [], render, budgetUnits = MAX_UNITS, injection = false } = {}) {
   const requested = typeof budgetUnits === 'number' && Number.isFinite(budgetUnits) ? Math.floor(budgetUnits) : MAX_UNITS;
   const budget = Math.max(0, Math.min(MAX_UNITS, requested));
   const trace = { mode: 'existing_candidates', budgetUnits: budget, units: 0, candidatesExamined: 0, currentAttributesExamined: 0, selectedCount: 0, selectedIds: [], omittedBudget: 0, rejectedOwner: 0, rejectedSource: 0, rejectedTopic: 0, rejectedCategory: 0, rejectedVisibility: 0, renderFailed: 0, budgetInsufficient: false, extraModelCalls: 0, extraVectorCalls: 0, extraIndexQueries: 0 };
   const records = [];
   let text = '';
-  if (estimateUnits(SKILL_EVIDENCE_GUIDANCE) > budget) {
+  const guidance=injection?`[习得记录${typeof playerName==='string'&&playerName.trim()?' · '+playerName.trim():''}]`:SKILL_EVIDENCE_GUIDANCE;
+  if (estimateUnits(guidance) > budget) {
     trace.budgetInsufficient = true;
     return { text, trace, records };
   }
-  text = SKILL_EVIDENCE_GUIDANCE;
+  text = guidance;
   const player = typeof playerName === 'string' ? foldName(playerName.trim()) : '';
   const names = player ? new Set([player, ...(Array.isArray(aliases) ? aliases : []).filter(alias => typeof alias === 'string' && alias.trim()).map(alias => foldName(alias.trim()))]) : new Set();
   let topicQuery = foldName(typeof query === 'string' ? query : '');
@@ -89,6 +90,7 @@ export function skillEvidencePacket({ playerName = '', query = '', candidates = 
       tryRecord(candidates[i]);
     }
   }
+  if(injection&&!records.length)text='';
   trace.units = estimateUnits(text);
   trace.selectedCount = records.length;
   trace.selectedIds = records.map(record => safeId(record.id)).filter(Boolean);

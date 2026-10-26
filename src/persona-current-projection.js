@@ -4,7 +4,7 @@ import {withoutPrivateSpeech} from './memory-evidence.js';
 
 // Derived views only. The saved source, DIY prose and immutable checkpoints
 // remain recoverable. Do not guess semantic equivalence between different facts.
-const cache=new WeakMap(),frameCache=new WeakMap(),directiveBodies=new WeakMap();
+const cache=new WeakMap(),frameCache=new WeakMap(),directiveBodies=new WeakMap(),requestBodies=new WeakMap();
 const stagePattern=/(?:国中|初中|高中|大学)[一二三四1-4]年级/g;
 const sameStage=s=>s.replace('国中','初中').replace(/[1234]/g,c=>'一二三四'[Number(c)-1]);
 const sourceStage='(?:(?:国中|初中|高中|大学)[一二三四1-4](?:年级|年)?|[国初高大][一二三四1-4])';
@@ -105,7 +105,7 @@ export function personaTimelineFrame(records={},endFloor=Infinity,options){
  const latest=latestFrame([...(recorded?[recorded]:[]),...previous,...source]);
  return latest?.stage?latest:null;
 }
-function sourceStageProjection(text,frame,name){
+function sourceStageProjection(text,frame,name,{injection=false}={}){
  let ownStage=false;
  const projected=text.replace(/[^\n。；;，,]+/gu,clause=>{
   const stages=clause.match(stagePattern);if(!stages)return clause;
@@ -118,7 +118,7 @@ function sourceStageProjection(text,frame,name){
   const subject=/^\s*(?:【[^】]*】\s*)?(?:(?:核心身份|当前身份|身份|当前学段|学段|年级)\s*[:：]\s*)?([\p{L}·・]{1,40}?)\s*(?:现为|目前(?:是|在)?|现在(?:是|在)?|就读于?|在|是)/u.exec(clause)?.[1];
   if(subject&&![name,'她','他','本人','自己','当前','目前','现在'].includes(subject))return clause;
   ownStage=true;
-  return clause.replace(stagePattern,stage=>sameStage(stage)===sameStage(frame.stage)?stage:`${stage}〔非当前时点的学段参考〕`);
+  return clause.replace(stagePattern,stage=>sameStage(stage)===sameStage(frame.stage)?stage:`${stage}${injection?'〔原设定学段〕':'〔非当前时点的学段参考〕'}`);
  });
  return {text:projected,ownStage};
 }
@@ -133,9 +133,31 @@ export function applyUserDirectives(profile){
   // owns one separate emphasis message. Only strip wrappers created here,
   // never search an arbitrary saved/manual body for a matching heading.
   directiveBodies.set(projected,text);
+  if(requestBodies.has(profile))requestBodies.set(projected,requestBodies.get(profile));
   return projected;
 }
-export const personaRequestText=profile=>directiveBodies.get(profile)??profile.text;
+export function personaRequestText(profile){
+ if(!profile?.composition||profile.manual||profile.locked)return directiveBodies.get(profile)??profile?.text;
+ // Raw automatic profiles can also reach this entry point. Use the same
+ // trusted projection and cache as the normal controller path, never infer
+ // generated wrappers from arbitrary saved text.
+ const view=requestBodies.get(profile)??requestBodies.get(projectCurrentPersona(profile));
+ if(view.text!==undefined)return view.text;
+ let text=personaCompositionText(view.composition,{hasSources:view.hasSources,injection:true});
+ const {frame}=view;
+ if(frame?.provenance?.kind==='source-message'){
+  text=`【当前叙事时点：${frame.stage}】\n${sourceStageProjection(text,frame,view.name,{injection:true}).text}`;
+ }else if(frame){
+  text=text.split('\n').map(line=>{
+   const stages=line.match(stagePattern)??[];
+   if(!stages.some(s=>sameStage(s)!==sameStage(frame.stage)))return line;
+   if(/原卡默认|原设定时点|并非当前|不是当前|历史|倒叙|此前|当时/.test(line))return line;
+   return `〔原设定时点〕${line.replace(/当前/g,'原设定')}`;
+  }).join('\n');
+  text=`【当前叙事时点：${frame.stage}】\n${text}`;
+ }
+ view.text=text;return text;
+}
 export function projectCurrentPersona(profile,frame=null){
  if(!profile?.composition||profile.manual||profile.locked)return applyUserDirectives(profile);
  const endFloor=Number.isSafeInteger(profile.through)?profile.through:Infinity;
@@ -166,5 +188,8 @@ export function projectCurrentPersona(profile,frame=null){
   text=`【当前叙事时点：${frame.stage}；第${frame.floor}楼明确指定。以下不同学段/年龄属于原设定参考，不据此改变当前场景；不推算未说明的年龄。】\n${text}`;
  }
  const projected=applyUserDirectives({...profile,composition,text,projection:{version:1,duplicateParts:duplicates,timeline:frame}});
+ // The second view is built only for actual injection, once per projection;
+ // opening a long dossier in the UI does not render another large string.
+ requestBodies.set(projected,{composition,hasSources:Boolean(profile.bindings?.length),name:profile.name,frame});
  cache.set(profile,{frameKey,profile:projected});return projected;
 }

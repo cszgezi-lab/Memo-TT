@@ -1399,13 +1399,13 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     const extras=available.filter(p=>!rejected.has(p.id)&&!used.has(p.id)&&selectedPeople.has(foldName(p.name))&&(settings().dynamicPersonaMvuMode!=='strict'||!p.bindings?.length));
     const insertedTexts=[...(finalized?.insertedTexts??[])];
     if(extras.length){
-      let content='【当前路线动态人设补充】根据已发生剧情持续更新的完整人物档案；最新正文与每份档案顶部的“当前剧情变化”优先，不因后文保留了较早关系历程、旧口吻或底色就把人物演回旧阶段；'+(settings().dynamicPersonaMvuMode==='strict'?'遵守当前 MVU 阶段边界':'MVU 数值只作参考，不因数值未变否定剧情发展')+'；不赋予其他角色额外知情。\n'+extras.map(p=>`${p.name}（依据至 #${p.through}）：\n${personaRequestText(p)}`).join('\n\n');
+      let content='【当前路线动态人设补充】\n当前变化优先 · '+(settings().dynamicPersonaMvuMode==='strict'?'MVU阶段约束':'剧情主导 · MVU参考')+'\n'+extras.map(p=>`${p.name}：\n${personaRequestText(p)}`).join('\n\n');
       if(worldbook.renderText)content=worldbook.renderText(content);
       payload.messages.splice(Math.max(0,payload.messages.length-1),0,{role:'system',content});insertedTexts.push(content);
     }
     const selected=available.filter(p=>used.has(p.id)||extras.includes(p));
     const rules=[...new Set([...selected,...directiveOnly.filter(p=>selectedPeople.has(foldName(p.name)))].flatMap(p=>(p.userDirectives??[]).filter(line=>String(line??'').trim()).map(line=>`${p.name}：${String(line).trim()}`)))];
-    if(rules.length){const content='【强调】只有这几句。和原书、旧态度或后文概括冲突时，只照这里做。\n'+rules.join('\n');payload.messages.splice(Math.max(0,payload.messages.length-1),0,{role:'system',content});insertedTexts.push(content);}
+    if(rules.length){const content='【强调】\n优先：用户要求\n'+rules.join('\n');payload.messages.splice(Math.max(0,payload.messages.length-1),0,{role:'system',content});insertedTexts.push(content);}
     const audit=view.worldbook?.audit??[];
     const recallProfile=p=>{
       const reviewedThrough=personaReviewedThrough(p);

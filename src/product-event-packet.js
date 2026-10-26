@@ -15,30 +15,46 @@ function eventKey(record){
  * an identical temporal/knowledge/persona guard. Different accounts remain.
  * Unlinked, multi-event and worldbook records are deliberately independent. */
 export function compileEventPacket(entries){
-  const groups=new Map();
+  const groups=new Map();let run=0,lastKey=null;
   for(const entry of entries){
-    const key=eventKey(entry.record),id=key?`event:${key}`:`record:${entry.record.id}`;
+    const key=eventKey(entry.record),base=key?`event:${key}`:`record:${entry.record.id}`;
+    // Compact sending keeps the admitted order. Never collect a later A
+    // across B merely because its event/category matches an earlier A.
+    const compactKey=entry.module?`${base}:${entry.module.key}`:null;
+    if(compactKey!==lastKey)run++;
+    const id=entry.module?`${run}:${compactKey}`:base;lastKey=compactKey;
     if(!groups.has(id))groups.set(id,[]);
     groups.get(id).push(entry);
   }
   let sharedLines=0,groupedRecords=0;
-  const parts=[];
+  const parts=[];let lastModule=null;
+  const append=(entry,text)=>{
+    const module=entry.module;
+    if(module&&typeof module.prefix==='string'&&module.prefix&&text.startsWith(module.prefix)){
+      if(lastModule===module.key)text=text.slice(module.prefix.length);
+      lastModule=module.key;
+    }else lastModule=null;
+    parts.push(text);
+  };
   for(const group of groups.values()){
     if(group.length===1||group.some(e=>e.record.mergedParts?.length)||
       group.some(e=>recallGuardSignature(e.record)!==recallGuardSignature(group[0].record))){
-      parts.push(group.map(e=>e.text).join('\n\n'));continue;
+      for(const entry of group)append(entry,entry.text);continue;
     }
-    const seenByGuard=new Map();let removed=0,lastRelated=null,relatedSeen=new Set();
-    const texts=group.map(({record,text,relatedContext,metadataRanges=[]})=>{
+    const seenByGuard=new Map();let removed=0,lastRelated=null,relatedSeen=new Set(),relatedBlocks=new Set();
+    const texts=group.map(({record,text,relatedContext,metadataRanges=[],module})=>{
       const signature=recallGuardSignature(record);
       const hasRelated=Number.isSafeInteger(relatedContext?.start)&&Number.isSafeInteger(relatedContext?.end)&&relatedContext.start>=0&&relatedContext.end<=text.length&&relatedContext.end>relatedContext.start;
       const relatedSignature=hasRelated?stableStringify(record.relatedEvents??[]):null;
-      if(relatedSignature!==lastRelated)relatedSeen=new Set();
+      if(relatedSignature!==lastRelated){relatedSeen=new Set();relatedBlocks=new Set();}
       lastRelated=relatedSignature;
+      const relatedBlock=hasRelated?text.slice(relatedContext.start,relatedContext.end):null;
+      const sharedBlock=Boolean(module&&hasRelated&&relatedBlocks.has(relatedBlock));
       const metadata=[];let offset=0;
       const lines=text.split('\n').filter(line=>{
         const start=offset;offset+=line.length+1;
         const inRelated=hasRelated&&start>=relatedContext.start&&start<relatedContext.end;
+        if(inRelated&&sharedBlock){removed++;return false;}
         const generatedMetadata=metadataRanges.some(range=>range.start===start&&range.end===start+line.length);
         if(!(generatedMetadata&&sharedLine.test(line))&&!(inRelated&&(relatedLine.test(line)||sharedLine.test(line))))return true;
         // The same linked event can have different knowledge by floor. Only
@@ -51,13 +67,21 @@ export function compileEventPacket(entries){
       // Only inherit from earlier records, never from an earlier subsection
       // in the same record (which might describe a different perspective).
       metadata.forEach(([seen,line])=>seen.add(line));
+      if(hasRelated)relatedBlocks.add(relatedBlock);
       return lines.join('\n');
     });
     const original=group.map(e=>e.text).join('\n\n');
     const factored=['[同一事件；后项省略的共同说明沿用前项，差异按各项说明。]',...texts].join('\n\n');
     // Don't add a decorative group heading that costs more than it saves.
-    if(removed&&factored.length<original.length){parts.push(factored);sharedLines+=removed;groupedRecords+=group.length;}
-    else parts.push(original);
+    if(removed&&factored.length<original.length){
+      const note='[同一事件；后项省略的共同说明沿用前项，差异按各项说明。]';
+      for(let i=0;i<texts.length;i++){
+        let text=texts[i];
+        if(i===0){const prefix=group[i].module?.prefix;text=prefix&&text.startsWith(prefix)?prefix+note+'\n'+text.slice(prefix.length):note+'\n\n'+text;}
+        append(group[i],text);
+      }
+      sharedLines+=removed;groupedRecords+=group.length;
+    }else for(const entry of group)append(entry,entry.text);
   }
   const text=parts.join('\n\n'),beforeChars=entries.map(e=>e.text).join('\n\n').length;
   return {text,groups:groups.size,groupedRecords,sharedLines,beforeChars,afterChars:text.length,savedChars:beforeChars-text.length};

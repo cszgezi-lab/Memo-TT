@@ -1,7 +1,7 @@
 import { LocalBM25Index, retrieveMemories, tokenizeChinese } from './retrieval.js';
 import { estimateUnits, clone, stableStringify, throwIfAborted, yieldLocalWork } from './utils.js';
 import { buildDictionary, dictionaryQuery,enrichRetrievalMetadata } from './product-dictionary.js';
-import { fullSearchText, narrativeText, recordTitle, sourceFloors, sourceLabel, stateLabel, awarenessLabel, viaLabel, relationLabel, epistemicLabel, fieldLabel,scopeLabel } from './product-narrative.js';
+import { fullSearchText, narrativeText, recordTitle, sourceFloors, sourceLabel, stateLabel, awarenessLabel, viaLabel, relationLabel, epistemicLabel, fieldLabel,scopeLabel,compactAwarenessText } from './product-narrative.js';
 import { hasStoryTime, storyDateOf } from './temporal.js';
 import { coveredRecallRecord, recallSelectionReason, nameOnlyRecallCandidates, coverLocalQuestionParts, coverLocalQuestionPartsAsync, recallActorFilter } from './product-recall-packing.js';
 import { factValue, factImportance, fullCharacterGroups, currentAttributeRecords, awarenessSubjectLabel, characterRecordSubjects, explicitSubjectNames, PERSON_RECORD_CATEGORIES, factKey } from './product-person-profiles.js';
@@ -216,27 +216,32 @@ function timeFocusPacket(records,settings,base,budget){
 function awarenessText(rows){
   return rows.map(a=>`${awarenessSubjectLabel(a)}：${narrativeText(a.knowledge??a.fact??a.content)}〔${awarenessLabel(a.status??a.knowledgeStatus)}；${viaLabel(a.via)}${hasStoryTime(a.learnedAt)?`；获知时间：${narrativeText(a.learnedAt)}`:''}${a.acquisitionEvidence?.method==='context-review-v1'&&a.acquisitionEvidence.access?`；获知范围（不可超出）：${narrativeText(a.acquisitionEvidence.access)}`:''}〕`).join('；');
 }
-export function renderMemoryCard(card, settings = {}, { body=card.description, metadataOnly=false, detail=false, full=false, query=null, sourceContextSplit=false, captureRelatedContext, captureMetadataRanges }={}) {
+export function renderMemoryCard(card, settings = {}, { body=card.description, metadataOnly=false, detail=false, full=false, query=null, sourceContextSplit=false, injection=false, olderAttribute=false, omitModuleTitle=false, omitAwareness=false, captureModule, captureRelatedContext, captureMetadataRanges }={}) {
+  const moduleLabel=injection&&olderAttribute?'较早属性记录':card.category==='entityFactChanges'?'人物事实':CATEGORY_LABELS[card.category]??'记忆';
+  const modulePrefix=injection&&!metadataOnly&&!omitModuleTitle?`[${moduleLabel}]\n`:'';
+  if(modulePrefix)captureModule?.({key:stableStringify([card.category,card.customModuleId??null,olderAttribute]),prefix:modulePrefix});
+  const knowledge=rows=>injection?compactAwarenessText(rows,{subjectLabel:awarenessSubjectLabel}):awarenessText(rows);
   if(card.mergedParts?.length){
     const parts=card.mergedParts;
     const guard=p=>stableStringify({temporal:p.temporal,location:p.location,state:p.state,epistemicStatus:p.epistemicStatus,perspective:p.perspective,awareness:(p.awareness??[]).map(({id,sourceRefs,eventRef,eventId,...a})=>a),followUps:p.followUps??[]});
     if(parts.every(p=>guard(p)===guard(parts[0]))){
       const {mergedParts,...single}=card;
-      return renderMemoryCard({...single,temporal:parts[0].temporal,awareness:parts[0].awareness,followUps:parts[0].followUps},settings,{body,metadataOnly,detail,full,query});
+      return renderMemoryCard({...single,temporal:parts[0].temporal,awareness:parts[0].awareness,followUps:parts[0].followUps},settings,{body,metadataOnly,detail,full,query,injection,olderAttribute,omitModuleTitle,omitAwareness,captureModule,captureRelatedContext,captureMetadataRanges});
     }
-    return ['[同一事件的分段记录；知情范围仅适用于各自片段，不自动扩散]',...parts.map(p=>{
+    return modulePrefix+[injection?'[事件分段]':'[同一事件的分段记录；知情范围仅适用于各自片段，不自动扩散]',...parts.map((p,index)=>{
       const copy={...p};delete copy.mergeReview;
       const brief=detail||full?p.description:p.recallSummary||p.description;
       const excerpt=!detail&&!full&&query!==null?relevantPassage(p.description,p.recallSummary,query):'';
-      return `来源：${sourceFloors(p).map(n=>`第 ${n} 楼`).join('、')||'原记录'}\n${renderMemoryCard(copy,settings,{body:excerpt?`${brief}\n相关经过：${excerpt}`:brief,detail,full,query})}`;
+      return `${injection?`片段 ${index+1}`:`来源：${sourceFloors(p).map(n=>`第 ${n} 楼`).join('、')||'原记录'}`}\n${renderMemoryCard(copy,settings,{body:excerpt?`${brief}\n相关经过：${excerpt}`:brief,detail,full,query,injection,omitModuleTitle:injection})}`;
     })].join('\n\n');
   }
-  const lines = metadataOnly?[]:[`[${CATEGORY_LABELS[card.category] ?? '记忆'}] ${body}`];
-  if(card.stateHistorical)lines.push('这是已被后续记录接续的历史状态，不作当前关系或待履行约定。');
-  if(card.stateHistoryIds?.length)lines.push(`当前记录；另有 ${card.stateHistoryIds.length} 条前序依据保留在历史，不重复注入旧状态。`);
-  if(card.category==='commitmentChanges'&&card.state==='unknown')lines.push('约定状态待核对：正文已保留，暂不自动注入。可在内容校对中单独修正，无需重新总结。');
-  if(card.knowledgeReview?.status==='pending')lines.push('获知依据待核对：暂不把这条作为角色已知信息注入，可在内容校对中单独修正。');
-  if(card.category==='conflicts')lines.push('核对参考：保留分歧及原文结论；未解决不作事实，已否认不再当真。不由召回决定谁知情。');
+  const repeatedKnowledge=injection&&card.category==='awarenessChanges'&&body===narrativeText(card.knowledge??card.fact??card.content);
+  const lines = metadataOnly?[]:[injection?`${modulePrefix}${repeatedKnowledge?'':body}`:`[${CATEGORY_LABELS[card.category] ?? '记忆'}] ${body}`].filter(Boolean);
+  if(card.stateHistorical)lines.push(injection?'记录状态：历史':'这是已被后续记录接续的历史状态，不作当前关系或待履行约定。');
+  if(!injection&&card.stateHistoryIds?.length)lines.push(`当前记录；另有 ${card.stateHistoryIds.length} 条前序依据保留在历史，不重复注入旧状态。`);
+  if(!injection&&card.category==='commitmentChanges'&&card.state==='unknown')lines.push('约定状态待核对：正文已保留，暂不自动注入。可在内容校对中单独修正，无需重新总结。');
+  if(card.knowledgeReview?.status==='pending')lines.push(injection?'获知依据：待核对':'获知依据待核对：暂不把这条作为角色已知信息注入，可在内容校对中单独修正。');
+  if(!injection&&card.category==='conflicts')lines.push('核对参考：保留分歧及原文结论；未解决不作事实，已否认不再当真。不由召回决定谁知情。');
   for(const warning of card.continuityWarnings??[])lines.push(`待确认：${warning}`);
   if(detail&&!full&&card.acquisitionEvidence?.method==='context-review-v1'){
     lines.push(`校对结论：${card.acquisitionEvidence.reason}`);
@@ -250,46 +255,46 @@ export function renderMemoryCard(card, settings = {}, { body=card.description, m
   const viewpoints=(card.viewpoints??[]).filter(v=>relevant(`${v.content} ${v.context??''} ${v.target??''}`)).slice(0,full?Infinity:detail?8:2);
   const dialogues=(detail&&!full||settings.dialogueEnabled!==false?card.keyDialogues??[]:[]).filter(q=>(detail||!q.disabled)&&(relevant(`${q.text} ${q.context??''} ${q.meaning??''}`)||query!==null&&/原话|台词|说过什么/.test(query))).slice(0,full||detail?Infinity:2);
   for(const v of viewpoints)lines.push(`观念 / 态度：${v.holder}${v.target?` 对 ${v.target}`:''}：${v.content}${v.context?`〔${v.context}〕`:''}${v.basis?`（${epistemicLabel(v.basis)}）`:''}`);
-  for(const q of dialogues)if(!full||!q.disabled)lines.push(`关键台词：${q.speaker}${q.to?` 对 ${q.to}`:''}：「${q.text}」${q.context?`〔${q.context}〕`:''}${q.meaning?`；体现：${q.meaning}`:''}${q.status==='historical'?'〔过去阶段，不作当前承诺〕':''}${q.disabled?'〔不再注入〕':''}${q.provenance==='user_authored'?'〔用户编写〕':''}`);
-  if(dialogues.length)lines.push('原话仅作当时语境的证据，不要求复读；说过不等于仍持相同态度。');
-  if(card.category==='performanceHints')lines.push('演绎范围：本条仅证明来源情境中的表现，不凭一次经历推定每次必然如此；与本轮正文及当前阶段不符时不沿用。');
-  if(full&&(card.innerLifeHistorical||card.innerLife?.status==='historical'))lines.push(`心迹历程：${card.innerLife.stage}（过去阶段，完整心迹按相关往事召回；不作当前状态）`);
-  else if((detail&&!full||settings.journalEnabled!==false)&&innerLifeText(card))lines.push(innerLifeText(card));
+  for(const q of dialogues)if(!full||!q.disabled)lines.push(`关键台词：${q.speaker}${q.to?` 对 ${q.to}`:''}：「${q.text}」${q.context?`〔${q.context}〕`:''}${q.meaning?`；体现：${q.meaning}`:''}${q.status==='historical'?(injection?'〔过去阶段〕':'〔过去阶段，不作当前承诺〕'):''}${q.disabled?'〔不再注入〕':''}${q.provenance==='user_authored'?'〔用户编写〕':''}`);
+  if(!injection&&dialogues.length)lines.push('原话仅作当时语境的证据，不要求复读；说过不等于仍持相同态度。');
+  if(card.category==='performanceHints')lines.push(injection?'演绎范围：来源情境':'演绎范围：本条仅证明来源情境中的表现，不凭一次经历推定每次必然如此；与本轮正文及当前阶段不符时不沿用。');
+  if(full&&(card.innerLifeHistorical||card.innerLife?.status==='historical'))lines.push(injection?`心迹历程：${card.innerLife.stage}（过去阶段）`:`心迹历程：${card.innerLife.stage}（过去阶段，完整心迹按相关往事召回；不作当前状态）`);
+  else if((detail&&!full||settings.journalEnabled!==false)&&innerLifeText(card,{injection}))lines.push(innerLifeText(card,{injection}));
   if(detail&&card.detailWarnings?.rejectedDialogues)lines.push(`提取提示：${card.detailWarnings.rejectedDialogues} 句台词未通过原话或说话人校验，未作为逐字引语保存。可在关键对话中人工补充。`);
   if(detail&&card.detailWarnings?.invalidInnerLife)lines.push('提取提示：心迹缺少所属角色、阶段或正文，本条未保存日记内容。');
   if (card.state) lines.push(`状态：${stateLabel(card.state)}`);
   if (card.mergeReview?.status==='pending') {
-    lines.push('合并待核对：尚未确认与已有记录为同一次事件，暂存独立；不据此认定发生了两次。');
+    lines.push(injection?'同一事件归属：待核对':'合并待核对：尚未确认与已有记录为同一次事件，暂存独立；不据此认定发生了两次。');
     if(detail)lines.push(`旧记录发生时间：${narrativeText(card.mergeReview.previousTime)||'未提取'}；本次提取：${narrativeText(card.mergeReview.proposedTime)||'未提取'}`);
   }
   if (card.epistemicStatus && card.epistemicStatus !== 'observed') lines.push(`性质：${epistemicLabel(card.epistemicStatus)}`);
-  if (card.category === 'knowledge') lines.push('外部设定资料：当前聊天分支事实优先，原作与计划不等于已经发生或角色已知情。');
-  else if (card.category==='awarenessChanges') lines.push(`知情：${awarenessText([card])}`);
-  else if (card.awareness?.length) lines.push(`知情：${awarenessText(card.awareness)}`);
-  else if(detail&&!card.relatedEvents?.some(e=>e.awareness.length)&&['events','summaryView'].includes(card.category))lines.push('本条未关联知情记录，不等于无人知情；不能据此让所有角色知情。');
+  if (card.category === 'knowledge') lines.push(injection?'资料类型：外部设定':'外部设定资料：当前聊天分支事实优先，原作与计划不等于已经发生或角色已知情。');
+  else if (!omitAwareness&&card.category==='awarenessChanges') lines.push(`${injection?'当时知情：\n':'知情：'}${knowledge([card])}`);
+  else if (!omitAwareness&&card.awareness?.length) lines.push(`${injection?'当时知情：\n':'知情：'}${knowledge(card.awareness)}`);
+  else if(!injection&&detail&&!card.relatedEvents?.some(e=>e.awareness.length)&&['events','summaryView'].includes(card.category))lines.push('本条未关联知情记录，不等于无人知情；不能据此让所有角色知情。');
   if(detail||settings.timeProtection)lines.push(...timeLines(card.temporal,settings).map(line=>sourceContextSplit?`本楼摘要${line}`:line));
-  if(full&&['awarenessChanges','relationshipChanges','personaChanges','performanceHints'].includes(card.category)&&sourceFloors(card).length)lines.push(`记录${sourceLabel(card)}（来源顺序，不代替生效时间）`);
+  if(!injection&&full&&['awarenessChanges','relationshipChanges','personaChanges','performanceHints'].includes(card.category)&&sourceFloors(card).length)lines.push(`记录${sourceLabel(card)}（来源顺序，不代替生效时间）`);
   if(card.category==='entityFactChanges'){
     // Preserve a chronology anchor even when the model supplied no validity
     // date. A source floor is evidence provenance, not an inferred effective date.
-    if(sourceFloors(card).length)lines.push(`属性记录${sourceLabel(card)}`);
+    if(!injection&&sourceFloors(card).length)lines.push(`属性记录${sourceLabel(card)}`);
     if(Object.hasOwn(card,'from')||Object.hasOwn(card,'oldValue')){
       const previous=Object.hasOwn(card,'from')?card.from:card.oldValue;
       lines.push(`原先取值：${previous===null?'空值（未提供具体旧值）':narrativeText(previous)}`);
     }
-    if(hasStoryTime(factValidity(card,'validFrom')))lines.push(`开始适用：${narrativeText(factValidity(card,'validFrom'))}`);
-    if(hasStoryTime(factValidity(card,'validUntil')))lines.push(`适用截至：${narrativeText(factValidity(card,'validUntil'))}`);
+    if(hasStoryTime(factValidity(card,'validFrom')))lines.push(`${injection?'生效':'开始适用'}：${narrativeText(factValidity(card,'validFrom'))}`);
+    if(hasStoryTime(factValidity(card,'validUntil')))lines.push(`${injection?'截至':'适用截至'}：${narrativeText(factValidity(card,'validUntil'))}`);
   }
   if(card.relatedEvents?.length&&(detail||card.category==='summaryView')){
     const start=lines.join('\n').length+(lines.length?1:0);
-    lines.push('关联事件（不代表全部发生在本楼，参与者不等于本楼全部在场）：');
+    lines.push(injection?'关联事件：':'关联事件（不代表全部发生在本楼，参与者不等于本楼全部在场）：');
     for(const e of card.relatedEvents){
       lines.push(`事件：${e.title}`);
       if(e.participants.length)lines.push(`事件参与者：${narrativeText(e.participants)}`);
       if(e.location)lines.push(`事件地点：${narrativeText(e.location)}`);
       if(detail||settings.timeProtection)lines.push(...timeLines(e.temporal,settings));
-      if(e.awareness.length)lines.push(`截至本楼的知情记录：${awarenessText(e.awareness)}`);
-      else if(detail&&card.category==='summaryView')lines.push('该事件暂无可关联到本楼及此前的知情记录，不据参与者推断。');
+      if(e.awareness.length)lines.push(`${injection?'当时知情：\n':'截至本楼的知情记录：'}${knowledge(e.awareness)}`);
+      else if(!injection&&detail&&card.category==='summaryView')lines.push('该事件暂无可关联到本楼及此前的知情记录，不据参与者推断。');
     }
     captureRelatedContext?.({start,end:lines.join('\n').length});
   }
@@ -303,7 +308,7 @@ export function renderMemoryCard(card, settings = {}, { body=card.description, m
     lines.push(`变化人物：${narrativeText(card.subject??card.person??card.entity)}；针对对象：${narrativeText(card.object??card.objectRef)}`);
     lines.push(`适用情境与范围：${narrativeText(card.context)}；${narrativeText(scopeLabel(card.scope))}`);
     const validity=card.expiresAt??card.validUntil??card.term??card.duration;
-    lines.push(validity?`有效期：${narrativeText(validity)}`:'有效期未确认；仅用于上述对象、情境与范围，不推定永久变化。');
+    lines.push(validity?`有效期：${narrativeText(validity)}`:injection?'有效期：未确认':'有效期未确认；仅用于上述对象、情境与范围，不推定永久变化。');
   }else if (card.context || card.validUntil || card.term) lines.push(`适用范围：${narrativeText(card.context)} ${narrativeText(card.validUntil ?? card.term)}`);
   if(full){
     if(card.scope)lines.push(`记录范围：${narrativeText(scopeLabel(card.scope))}`);
@@ -405,6 +410,28 @@ function classifyFieldModule(fieldKey) {
   return 'misc';
 }
 
+function renderStandingRecords(records,settings){
+  const parts=[];let pending=null;
+  const flush=()=>{if(pending){parts.push(['[当时知情]',compactAwarenessText(pending.records,{subjectLabel:awarenessSubjectLabel}),pending.tail].filter(Boolean).join('\n'));pending=null;}};
+  for(const record of records){
+    const view={...record,innerLife:null,innerLifeHistorical:false};
+    const options={body:record.description??'',detail:true,full:true,injection:true,omitModuleTitle:true};
+    const renderSettings={...settings,timeProtection:true};
+    const fact=narrativeText(record.knowledge??record.fact??record.content);
+    const simple=record.category==='awarenessChanges'&&(record.description??'')===fact&&
+      !['keyDialogues','viewpoints','followUps','continuityWarnings'].some(key=>record[key]?.length)&&
+      !record.stateHistorical&&!record.stateHistoryIds?.length&&!record.mergeReview&&!record.knowledgeReview;
+    if(!simple){flush();parts.push(renderMemoryCard(view,renderSettings,options));continue;}
+    const tail=renderMemoryCard(view,renderSettings,{...options,metadataOnly:true,omitAwareness:true});
+    // Same links AND complete linked snapshots. Sharing a person or date
+    // cannot make separate events or A -> B -> A snapshots interchangeable.
+    const key=stableStringify({tail,eventRef:record.eventRef??null,eventId:record.eventId??null,eventRefs:record.eventRefs??[],relatedEvents:record.relatedEvents??[],temporal:record.temporal??null,perspective:record.perspective??null,state:record.state??null,epistemicStatus:record.epistemicStatus??null});
+    if(pending?.key!==key){flush();pending={key,tail,records:[]};}
+    pending.records.push(record);
+  }
+  flush();return parts.filter(Boolean).join('\n\n');
+}
+
 export async function buildPersonaBudgetPlan(attributePlan, settings, { focusQuery, renderPlan } = {}) {
   // Planner-side defaults. Values are conservative; settings overrides are
   // explicit. Defaults must never silently rebuild the user's config.
@@ -490,11 +517,20 @@ export async function buildPersonaBudgetPlan(attributePlan, settings, { focusQue
   // what the current renderer would emit for the same records, in the same
   // order, so the trace stays comparable when personaModularBudget is off.
   const defaultRenderPlan = (selectedFields, awareness) => {
-    const records = selectedFields.flatMap(f => f.records);
+    const selectedSet=new Set(selectedFields);
+    // Budget priority chooses fields, not their narrative order. Knowledge
+    // is retained in its original admitted sequence, including A -> B -> A.
+    const records = fields.filter(f=>selectedSet.has(f)||f.module==='awareness').flatMap(f=>f.records);
+    // The planner always retains its admitted knowledge. Render it once,
+    // including rows whose optional attribute group did not fit the budget.
+    const knowledgeKey=r=>stableStringify(r);
+    const coveredKnowledge=new Set(records.flatMap(r=>r.category==='awarenessChanges'?[r]:(r.awareness??[])).map(knowledgeKey));
+    for(const row of awareness)if(!coveredKnowledge.has(knowledgeKey(row))){records.push({...row,category:'awarenessChanges',description:row.description??narrativeText(row.knowledge??row.fact??row.content)});coveredKnowledge.add(knowledgeKey(row));}
     const groups = new Map();
     for (const record of records) {
       const subject = record.entity
         ?? record.entityId
+        ?? (record.category==='awarenessChanges'?awarenessSubjectLabel(record):null)
         ?? fields.find(f => f.records.includes(record))?.subject
         ?? '';
       if (!groups.has(subject)) groups.set(subject, []);
@@ -503,31 +539,15 @@ export async function buildPersonaBudgetPlan(attributePlan, settings, { focusQue
     const parts = [];
     const rendered = [];
     for (const [subject, groupRecords] of groups) {
-      const lines = [];
-      for (const record of groupRecords) {
-        const body = record.description ?? '';
-        lines.push(renderMemoryCard(
-          { ...record, innerLife: null, innerLifeHistorical: false },
-          { ...settings, timeProtection: true },
-          { body, detail: true, full: true }
-        ));
-        rendered.push(record);
-      }
-      if (lines.length) parts.push(`[当前属性：${subject}]\n${lines.join('\n\n')}`);
+      const text=renderStandingRecords(groupRecords,settings);
+      rendered.push(...groupRecords);
+      if(text)parts.push(`${groupRecords.every(r=>r.category==='awarenessChanges')?'':`[当前属性：${subject||'未注明人物'}]\n`}${text}`);
     }
-    const awarenessText = awareness.length
-      ? awareness.map(r => renderMemoryCard(
-        { ...r, innerLife: null, innerLifeHistorical: false },
-        { ...settings, timeProtection: true },
-        { body: r.description ?? r.knowledge ?? '', detail: true, full: true }
-      )).join('\n\n')
-      : '';
-    const header = '[本轮涉及人物的当前属性；每个字段只保留来源更晚的一条。提及不等于在场，资料不自动赋予其他角色知情权。关系、台词和人设变化按本场相关召回，不在这里整份展开。]';
-    const text = [
+    const header = '[人物当前记录]';
+    const text = parts.length ? [
       header,
       ...parts,
-      ...(awarenessText ? [awarenessText] : []),
-    ].filter(Boolean).join('\n\n');
+    ].filter(Boolean).join('\n\n') : '';
     return { text, renderedRecords: rendered };
   };
   const renderer = typeof renderPlan === 'function' ? renderPlan : defaultRenderPlan;
@@ -582,8 +602,10 @@ export async function buildPersonaBudgetPlan(attributePlan, settings, { focusQue
     const coveredSeen = []; // [{record, body}] for coveredRecallRecord lookups; do not re-emit covered records.
     const grouped = new Map();
     for (const r of allChosenRecords) {
-      const subject = r.entity ?? r.entityId ?? '';
-      const covered = coveredRecallRecord(r, r.description ?? '', coveredSeen);
+      const subject = r.entity ?? r.entityId ?? (r.category==='awarenessChanges'?awarenessSubjectLabel(r):'');
+      // A knowledge proposition can change certainty, source or scope while
+      // keeping the same prose. Share only its consecutive rendered wrapper.
+      const covered = r.category==='awarenessChanges'?null:coveredRecallRecord(r, r.description ?? '', coveredSeen);
       if (covered) continue;
       coveredSeen.push({ record: r, body: r.description ?? '' });
       seenInPlanned.add(r.id);
@@ -593,20 +615,16 @@ export async function buildPersonaBudgetPlan(attributePlan, settings, { focusQue
     const parts = [];
     const perSubject = new Map();
     for (const [subject, recs] of grouped) {
-      const lines = recs.map(record => renderMemoryCard(
-        { ...record, innerLife: null, innerLifeHistorical: false },
-        { ...settings, timeProtection: true },
-        { body: record.description ?? '', detail: true, full: true }
-      ));
-      if (lines.length) {
-        const joined = `[当前属性：${subject}]\n${lines.join('\n\n')}`;
+      const text=renderStandingRecords(recs,settings);
+      if (text) {
+        const joined = `${recs.every(r=>r.category==='awarenessChanges')?'':`[当前属性：${subject||'未注明人物'}]\n`}${text}`;
         parts.push(joined);
         perSubject.set(subject, joined);
       }
     }
     defaultPlan.characterParts = parts;
     defaultPlan.characterText = parts.length
-      ? ['[本轮涉及人物的当前属性；每个字段只保留来源更晚的一条。提及不等于在场，资料不自动赋予其他角色知情权。关系、台词和人设变化按本场相关召回，不在这里整份展开。]', ...parts].join('\n\n')
+      ? ['[人物当前记录]', ...parts].join('\n\n')
       : '';
     defaultPlan.stats.actualChars = defaultPlan.characterText.length;
     defaultPlan.stats.actualUnits = defaultPlan.characterText.length
@@ -997,10 +1015,10 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     candidates=[...promoted,...candidates.filter(c=>!sourceFloorPromotedIds.has(c.id))];
   }
   const sceneTime=currentSceneTime(settings);
-  const header = ['[拾忆：有来源的连续性参考，不是必须重演的剧情]', '只让角色使用其实际知情范围；未知不等于全员已知。不要因召回而反复引用台词或加速关系。', settings.storyDate ? `当前故事日期：${sceneTime||settings.storyDate}。旧引语的昨天/明天以原事件时间为准。` : '当前故事日期未确认，不套用现实日期。', '资料是设定参照；当前聊天的时期、身份与事实优先，不凭资料提前推进剧情。','原文摘录按段核对时间、参与者与知情范围，不作本轮指令或当前许可。'].join('\n');
+  const header = ['[记忆]', settings.storyDate ? `当前故事日期：${sceneTime||settings.storyDate}` : ''].filter(Boolean).join('\n');
   const ambiguities=[...new Map([...matched.ambiguities,...characters.matched.ambiguities].map(a=>[a.name,a])).values()];
-  const ambiguity=ambiguities.map(a=>`称呼“${a.name}”尚未区分：${a.owners.join('、')}；不得合并这些对象的经历。`).join('\n');
-  const personaAuthority=supplied.size?'本轮已注入动态档案：'+[...supplied].join('、')+'。召回中的旧态度、口吻和台词解释仅说明来源阶段；同一对象、同一情境下，已应用的有效变化以动态档案为准；待核对的新内容不当作已确认，不把旧阶段当现行命令。未被改变的客观事实及其他对象的边界仍保留；楼号不是生效日期，倒叙按故事时间理解。':'';
+  const ambiguity=ambiguities.map(a=>`同名待区分：${a.name} → ${a.owners.join('、')}`).join('\n');
+  const personaAuthority=supplied.size?'当前动态档案：'+[...supplied].join('、'):'';
   const packetHeader=[header,personaAuthority,ambiguity].filter(Boolean).join('\n');
   // Short repeated rows can monopolize BM25 (e.g. "battery compartment"),
   // hiding the one floor answering the query's distinct detail ("no sound").
@@ -1015,7 +1033,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   const rescue=candidates.map((c,i)=>{
     const excerpt=sourceExcerptFor(c.record);
     const novel=excerpt?evidenceTerms(c.record,queryTokens,personNames).filter(t=>!represented.includes(t)&&excerpt.toLocaleLowerCase().includes(t)):[];
-    const standalone=excerpt?renderMemoryCard(c.record,ordinaryRenderSettings,{body:`${c.record.recallSummary||c.record.description}\n${sourceQuote(c.record,excerpt)}`,query:focusQuery}):'';
+    const standalone=excerpt?renderMemoryCard(c.record,ordinaryRenderSettings,{body:`${c.record.recallSummary||c.record.description}\n${sourceQuote(c.record,excerpt,{injection:true})}`,query:focusQuery,injection:true}):'';
     return {c,i,novel, fits:standalone&&estimateUnits(`${packetHeader}\n\n${standalone}`)<=settings.retrievalBudgetUnits};
   }).filter(r=>r.novel.length&&r.fits).sort((a,b)=>b.novel.length-a.novel.length||a.i-b.i)[0];
   if(rescue)candidates=[{...rescue.c,queryCoverageRescue:true},...candidates.filter(c=>c.id!==rescue.c.id)];
@@ -1026,7 +1044,6 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   // Use its output verbatim so the budget-aware pipeline and the original
   // pipeline agree on what was actually emitted. Diary content is appended
   // unchanged; journal must still participate in the actual text.
-  const characterParts = personaPlan.characterParts ?? [];
   const characterChosen = personaPlan.characterChosen;
   // Mirror the historical `packed.push(record)` for each record the planner
   // emitted, both for the original character channel and for the post-loop
@@ -1040,7 +1057,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   for (const entry of characterChosen) {
     const record = entry?.record;
     if (!record) continue;
-    const coveredBy = coveredRecallRecord(record, record.description ?? '', localChosen);
+    const coveredBy = record.category==='awarenessChanges'?null:coveredRecallRecord(record, record.description ?? '', localChosen);
     if (coveredBy) {
       omitted.push(record.id);
       decisions.push({
@@ -1084,14 +1101,11 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   // emits a single decision for the whole group, so loop is unnecessary here.
   const diaryRows=settings.journalEnabled===false?[]:characterKeepsakes(characterChosen.map(r=>r.record),{withExpected:false}).diaries;
   const oldDiaryQuery=/当初|以前|过去|当时|日记|心迹|心路|阶段|为什么.*(?:信任|喜欢|拒绝)/u.test(focusQuery);
-  const diaryText=diaryRows.filter(r=>!r.data.disabled&&(oldDiaryQuery||!r.record.innerLifeHistorical&&r.data.status!=='historical')).map(r=>innerLifeText({...r.record,innerLife:{...r.data,...(r.record.innerLifeHistorical?{status:'historical'}:{})}})).filter(Boolean).join('\n\n');
-  // Append diary text after the planner's characterParts. Re-derive the
-  // final characterText so diary content participates in the budget too.
-  const finalParts = [...characterParts];
-  if(diaryText)finalParts.push(diaryText);
-  const characterText = finalParts.length
-    ? ['[本轮涉及人物的当前属性；每个字段只保留来源更晚的一条。提及不等于在场，资料不自动赋予其他角色知情权。关系、台词和人设变化按本场相关召回，不在这里整份展开。]', ...finalParts].join('\n\n')
-    : '';
+  const diaryText=diaryRows.filter(r=>!r.data.disabled&&(oldDiaryQuery||!r.record.innerLifeHistorical&&r.data.status!=='historical')).map(r=>innerLifeText({...r.record,innerLife:{...r.data,...(r.record.innerLifeHistorical?{status:'historical'}:{})}},{injection:true})).filter(Boolean).join('\n\n');
+  // Both planner modes return their complete accepted text. The modular
+  // planner does not use characterParts; consuming that off-mode detail
+  // would mark records selected while silently omitting them from the request.
+  const characterText = [personaPlan.characterText,diaryText].filter(Boolean).join('\n\n');
   let memoryCount=0;
   let excerpts=0;
   const budget = settings.retrievalBudgetUnits;
@@ -1121,16 +1135,17 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     // expanded alias names. Store/search the full narrative without sending it.
     const excerpt=item.record.category==='conflicts'?'':relevantPassage(item.record.description,item.record.recallSummary,focusQuery);
     const sourceExcerpt=item.queryPlanCoverage&&item.record.category==='summaryView'?originalSourceText(item.record):sourceExcerptFor(item.record);
-    const body=[excerpt?`${brief}\n相关经过：${excerpt}`:brief,sourceExcerpt?sourceQuote(item.record,sourceExcerpt):''].filter(Boolean).join('\n');
-    const coveredBy=coveredRecallRecord(item.record,body,chosen);
+    const body=[excerpt?`${brief}\n相关经过：${excerpt}`:brief,sourceExcerpt?sourceQuote(item.record,sourceExcerpt,{injection:true}):''].filter(Boolean).join('\n');
+    const coveredBy=item.record.category==='awarenessChanges'?null:coveredRecallRecord(item.record,body,chosen);
     const decision={id:item.id,title:recordTitle(item.record),category:item.record.category,reason:item.sourceProvenance?'同源约定的原始事件':item.sourceFloorPromotion?'多楼同源细节的完整事件':item.queryCoverageRescue?'原文补充未覆盖的检索细节':item.queryPartCoverage?'分别覆盖本轮的问题':recallSelectionReason(item),scores:{keyword:item.localScore??null,vector:item.vectorScore??null,fusion:item.fusionScore??null,final:item.score??null}};
     if(nameOnly.has(item.id)&&!sourceExcerpt&&!item.queryPlanCoverage){omitted.push(item.id);decisions.push({...decision,status:'name_only'});continue;}
     if(coveredBy){decisions.push({...decision,status:'duplicate',coveredBy});omitted.push(item.id);continue;}
-    let relatedContext=null,metadataRanges=[];
+    let relatedContext=null,metadataRanges=[],module=null;
+    const captureModule=value=>{module=value;};
     const captureRelatedContext=value=>{relatedContext=value;};
     const captureMetadataRanges=value=>{metadataRanges=value;};
-    let part = renderMemoryCard(item.record, ordinaryRenderSettings,{body,query:focusQuery,sourceContextSplit:Boolean(sourceExcerpt)&&item.record.category==='summaryView',captureRelatedContext,captureMetadataRanges});
-    const candidatePacket=()=>compileEventPacket([...packetEntries,{record:item.record,text:part,relatedContext,metadataRanges}]);
+    let part = renderMemoryCard(item.record, ordinaryRenderSettings,{body,query:focusQuery,injection:true,olderAttribute:olderFactIds.has(item.id),captureModule,sourceContextSplit:Boolean(sourceExcerpt)&&item.record.category==='summaryView',captureRelatedContext,captureMetadataRanges});
+    const candidatePacket=()=>compileEventPacket([...packetEntries,{record:item.record,text:part,relatedContext,metadataRanges,module}]);
     let trial=candidatePacket();
     let usedBody=body,usedExcerpt=Boolean(excerpt||sourceExcerpt);
     if(estimateUnits(`${packetHeader}\n\n${trial.text}`)>budget&&(excerpt||sourceExcerpt)){
@@ -1140,10 +1155,10 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
       // conditions. Never replace a source-backed restriction with a shorter
       // potentially unconditional claim merely to fit the history budget.
       if(sourceExcerpt){omitted.push(item.id);decisions.push({...decision,status:'budget',detail:'source_evidence_omitted'});continue;}
-      relatedContext=null;metadataRanges=[];part=renderMemoryCard(item.record,ordinaryRenderSettings,{body:brief,query:focusQuery,captureRelatedContext,captureMetadataRanges});usedBody=brief;usedExcerpt=false;trial=candidatePacket();
+      relatedContext=null;metadataRanges=[];module=null;part=renderMemoryCard(item.record,ordinaryRenderSettings,{body:brief,query:focusQuery,injection:true,olderAttribute:olderFactIds.has(item.id),captureModule,captureRelatedContext,captureMetadataRanges});usedBody=brief;usedExcerpt=false;trial=candidatePacket();
     }
     if (memoryCount >= settings.retrievalLimit || estimateUnits(`${packetHeader}\n\n${trial.text}`) > budget) { omitted.push(item.id);decisions.push({...decision,status:memoryCount>=settings.retrievalLimit?'limit':'budget'});continue; }
-    packed.push(item.record);packetEntries.push({record:item.record,text:part,relatedContext,metadataRanges});chosen.push({record:item.record,body:usedBody});content = `${packetHeader}\n\n${trial.text}`;
+    packed.push(item.record);packetEntries.push({record:item.record,text:part,relatedContext,metadataRanges,module});chosen.push({record:item.record,body:usedBody});content = `${packetHeader}\n\n${trial.text}`;
     memoryCount++;
     if(usedExcerpt)excerpts++;
     decisions.push({...decision,status:'selected',detail:sourceExcerpt&&usedExcerpt?'source_evidence':usedExcerpt?'excerpt':'brief',detailOmitted:Boolean(excerpt||sourceExcerpt)&&!usedExcerpt});
@@ -1190,7 +1205,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     }
     if(!resolved)unresolvedKnowledge.push(row.id);
   }
-  const contextText=knowledgeContext.size?['[知情所指的事件背景：仅解释具体事实的来龙去脉，不扩大任何角色的知情范围；知情状态仍以人物条目为准。]',...[...knowledgeContext.values()].map(event=>renderMemoryCard(event,{...ordinaryRenderSettings,timeProtection:true},{body:event.recallSummary||event.description,query:focusQuery}))].join('\n\n'):'';
+  const contextText=knowledgeContext.size?['[关联事件]',...[...knowledgeContext.values()].map(event=>renderMemoryCard(event,{...ordinaryRenderSettings,timeProtection:true},{body:event.recallSummary||event.description,query:focusQuery,injection:true,omitModuleTitle:true}))].join('\n\n'):'';
   // Reserve a bounded reminder from remaining ordinary space before packing
   // optional dialogue; existing selected event and persona content stays whole.
   const timeFocus=timeFocusPacket(packetEntries.map(entry=>entry.record),settings,[packetHeader,eventPacket.text].filter(Boolean).join('\n\n'),budget);
@@ -1200,7 +1215,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   // history returns after ordinary retrieval correctly filtered it out.
   const dialogueSource=selected.filter(record=>!coveredPersonaHistory(record)&&actorRelevant(record));
   const dialogueBudget=Math.min(1200,Math.max(0,Math.floor(budget*0.12)),Math.max(0,budget-estimateUnits(ordinaryText())-2));
-  const dialoguePacket=settings.dialogueEnabled===false?{rows:[],text:''}:importantDialoguePacket(dialogueSource,focusQuery,lexicon,[characterText,eventPacket.text,contextText].join('\n'),{maxRows:4,maxUnits:dialogueBudget,includeRow:row=>actorRelevant({...row.record,category:'events',participants:[row.subject,row.target].filter(Boolean)})});
+  const dialoguePacket=settings.dialogueEnabled===false?{rows:[],text:''}:importantDialoguePacket(dialogueSource,focusQuery,lexicon,[characterText,eventPacket.text,contextText].join('\n'),{injection:true,maxRows:4,maxUnits:dialogueBudget,includeRow:row=>actorRelevant({...row.record,category:'events',participants:[row.subject,row.target].filter(Boolean)})});
   const dialogueCards=[...new Map(dialoguePacket.rows.map(r=>[r.recordId,r.record])).values()].filter(c=>!packedIds.has(c.id)&&!knowledgeContext.has(c.id));
   // Final assembly must look at the actual text produced by each pipeline; the
   // historical `packed.length || dialoguePacket.rows.length` guard silently
@@ -1216,10 +1231,10 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   if(settings.skillEvidenceEnabled===true){
     const playerAuthority=authorityName(playerName);
     const aliases=playerAuthority?skillAliasCandidates.filter(name=>authorityName(name)===playerAuthority):[];
-    skillPacket=skillEvidencePacket({playerName:playerAuthority?canonical(playerName):'',aliases,query:focusQuery,
+    skillPacket=skillEvidencePacket({playerName:playerAuthority?canonical(playerName):'',aliases,query:focusQuery,injection:true,
       candidates:candidates.slice(0,48).filter(candidate=>candidate.record&&filter(candidate.record)),
       currentAttributes:characterChosen.slice(0,48).map(row=>row.record),budgetUnits:900,
-      render:record=>`${sourceLabel(record)}\n${renderMemoryCard(record,ordinaryRenderSettings,{body:record.description,query:focusQuery})}`});
+      render:record=>renderMemoryCard(record,ordinaryRenderSettings,{body:record.description,query:focusQuery,injection:true,olderAttribute:olderFactIds.has(record.id)})});
   }
   const bodyParts=[
     characterText,

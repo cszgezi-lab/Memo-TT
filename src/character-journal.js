@@ -1,5 +1,5 @@
 import { clone, stableStringify, sha256, estimateUnits } from './utils.js';
-import { sourceFloors, narrativeText,awarenessLabel,viaLabel } from './product-narrative.js';
+import { sourceFloors, narrativeText,awarenessLabel,viaLabel,compactAwarenessText } from './product-narrative.js';
 import { dictionaryQuery } from './product-dictionary.js';
 import { tokenizeChinese } from './retrieval.js';
 import { hasStoryTime } from './temporal.js';
@@ -48,10 +48,15 @@ export function completeInnerLife(record,evidence,category){
     origin:monologues.length?'source_monologue':'stage_observation'});
   return {...record,innerLife};
 }
-export function innerLifeText(card){
+export function innerLifeText(card,{injection=false}={}){
   const d=card.innerLife;if(!d?.text||d.disabled)return '';
+  if(injection){
+    const origin=d.origin==='stage_observation'?'阶段观察':d.origin==='source_monologue'?'原文独白':'';
+    const basis=({observed:'正文描写',character_claim:'角色自述',user_asserted:'用户编写',inferred:'推测'}[d.basis]??'来源未确认');
+    return `[私密心迹 · ${d.stage} · ${d.status==='historical'?'过去阶段':'当时状态'} · ${[origin,basis].filter(Boolean).join('；')}]\n人物：${card.subject??card.person??card.entity??'未注明'}${card.object?`；涉及对象：${card.object}`:''}${hasStoryTime(card.temporal)?`；时间：${narrativeText(card.temporal)}`:''}\n${d.text}${d.cause?`\n缘由：${d.cause}`:''}`;
+  }
   const basis=(d.origin==='stage_observation'?'阶段观察，非角色逐字心声；':d.origin==='source_monologue'?'原文明确内心独白；':'')+({observed:'依据正文明确描写',character_claim:'依据角色自述',user_asserted:'用户编写',inferred:'可选演绎推测，不是事实'}[d.basis]??'来源性质未确认');
-  return `[角色心迹 · ${d.stage} · ${d.status==='historical'?'过去阶段，非当前状态':'按本条时间与情境适用'} · ${basis}]\n人物：${card.subject??card.person??card.entity??'未注明'}${card.object?`；涉及对象：${card.object}`:''}${hasStoryTime(card.temporal)?`；时间：${narrativeText(card.temporal)}`:''}${sourceFloors(card).length?`；来源：第${sourceFloors(card).join('、')}楼`:''}\n${d.text}${d.cause?`\n变化缘由：${d.cause}`:''}\n仅供${card.subject??card.person??card.entity??'所属角色'}演绎参考，不代表实际写过日记；私密想法不赋予其他角色知情权。`;
+  return `[角色心迹 · ${d.stage} · ${d.status==='historical'?'过去阶段，非当前状态':'按本条时间与情境适用'} · ${basis}]\n人物：${card.subject??card.person??card.entity??'未注明'}${card.object?`；涉及对象：${card.object}`:''}${hasStoryTime(card.temporal)?`；时间：${narrativeText(card.temporal)}`:''}${!injection&&sourceFloors(card).length?`；来源：第${sourceFloors(card).join('、')}楼`:''}\n${d.text}${d.cause?`\n变化缘由：${d.cause}`:''}\n仅供${card.subject??card.person??card.entity??'所属角色'}演绎参考，不代表实际写过日记；私密想法不赋予其他角色知情权。`;
 }
 export function markDiaryHistory(cards){
   const groups=new Map(),historical=new Set();
@@ -71,7 +76,7 @@ export function markDiaryHistory(cards){
 }
 const refs=r=>(r.sourceRefs??[]).map(s=>stableStringify([s.sourceId,s.fragmentId??null,s.hash??null]));
 const quoteKey=q=>stableStringify([q.speaker,q.to??'',q.text]);
-const quoteAwareness=r=>(r.awareness??[]).length?`\n知情限制：${r.awareness.map(a=>`${a.person??a.subject??'未注明角色'}：${narrativeText(a.knowledge??a.fact??a.content)}〔${awarenessLabel(a.status??a.knowledgeStatus)}；${viaLabel(a.via)}${hasStoryTime(a.learnedAt)?`；获知时间：${narrativeText(a.learnedAt)}`:''}〕`).join('；')}`:'\n仅保留说话人与接收对象；未关联他人知情记录，不等于其他角色知道这段对话。';
+const quoteAwareness=(r,injection)=>(r.awareness??[]).length?(injection?`\n当时知情：\n${compactAwarenessText(r.awareness)}`:`\n知情限制：${r.awareness.map(a=>`${a.person??a.subject??'未注明角色'}：${narrativeText(a.knowledge??a.fact??a.content)}〔${awarenessLabel(a.status??a.knowledgeStatus)}；${viaLabel(a.via)}${hasStoryTime(a.learnedAt)?`；获知时间：${narrativeText(a.learnedAt)}`:''}〕`).join('；')}`):injection?'':'\n仅保留说话人与接收对象；未关联他人知情记录，不等于其他角色知道这段对话。';
 export function characterKeepsakes(cards=[],{withExpected=true}={}){
   const dialogues=[],diaries=[];
   for(const r of cards){
@@ -120,7 +125,7 @@ export function editKeepsakePatch(record,{kind,index,data,remove=false}){
   if(index===null)list.push(q);else list[index]=q;
   return {keyDialogues:list};
 }
-export function importantDialoguePacket(cards,query,dictionary,alreadyText='',{topicQuery=query,maxRows=4,maxUnits=1200,includeRow=()=>true}={}){
+export function importantDialoguePacket(cards,query,dictionary,alreadyText='',{topicQuery=query,maxRows=4,maxUnits=1200,includeRow=()=>true,injection=false}={}){
   // This is an extra route for old speech, beyond quotes already present in
   // retrieved events and the current persona. The current user turn is the
   // sole source of topics and people; old assistant prose is already in the
@@ -168,11 +173,11 @@ export function importantDialoguePacket(cards,query,dictionary,alreadyText='',{t
   }).filter(Boolean);
   const selected=(asksForSpeech&&candidates.some(c=>c.specific.length)?candidates.filter(c=>c.specific.length):candidates)
     .sort((a,b)=>b.score-a.score||b.floor-a.floor||a.index-b.index);
-  const header='[重要对话：历史原话及当时语境，不要求复读；说过不等于已经兑现，不改变未获知者的知识。]';
+  const header=injection?'[历史台词]':'[重要对话：历史原话及当时语境，不要求复读；说过不等于已经兑现，不改变未获知者的知识。]';
   const chosen=[],parts=[header];
   for(const {r} of selected){
     if(chosen.length>=Math.min(maxRows,asksForSpeech?4:2))break;
-    const part=`${r.subject}${r.target?` 对 ${r.target}`:''}：「${r.data.text}」${r.data.provenance==='user_authored'?'〔用户编写，非程序核对的逐字原文〕':''}\n语境：${r.data.context||r.record.title||'见原事件'}${r.data.meaning?`；含义：${r.data.meaning}`:''}${r.record.temporal?`\n时间：${narrativeText(r.record.temporal)}`:''}\n${quoteAwareness(r.record)}\n来源：${sourceFloors(r.record).map(n=>`第${n}楼`).join('、')||'原记录'}`;
+    const part=`${r.subject}${r.target?` 对 ${r.target}`:''}：「${r.data.text}」${r.data.provenance==='user_authored'?'〔用户编写，非程序核对的逐字原文〕':''}\n语境：${r.data.context||r.record.title||'见原事件'}${r.data.meaning?`；含义：${r.data.meaning}`:''}${r.record.temporal?`\n时间：${narrativeText(r.record.temporal)}`:''}\n${quoteAwareness(r.record,injection)}${injection?'':`\n来源：${sourceFloors(r.record).map(n=>`第${n}楼`).join('、')||'原记录'}`}`;
     if(estimateUnits([...parts,part].join('\n\n'))>maxUnits)continue;
     chosen.push(r);parts.push(part);
   }

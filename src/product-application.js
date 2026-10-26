@@ -1925,7 +1925,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       let content=result.text;
       // Explicitly configured authoritative values are part of character
       // context, not something to silently omit when an event budget is small.
-      const externalText=external!=='未配置'&&external!=='{}'?`外部权威状态（只读，不改写 MVU；变量不自动赋予角色知情权）：${external}`:'';
+      const externalText=external!=='未配置'&&external!=='{}'?`[外部权威状态·只读]\n${external}`:'';
       if(externalText){
         const footer=result.timeFocusText;
         if(footer&&content.endsWith(footer))content=[content.slice(0,-footer.length).trimEnd(),externalText,footer].filter(Boolean).join('\n\n');

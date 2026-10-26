@@ -116,6 +116,6 @@ export function sourceRecallExcerpt(record, tokens, extraNames = []) {
   return brief.replace(/\s+/gu,'').includes(excerpt.toLocaleLowerCase().replace(/\s+/gu,'')) ? '' : excerpt;
 }
 
-export function sourceQuote(record, excerpt) {
-  return `原文依据（第 ${record.floorIndex} 楼，摘录）：\n${excerpt.trim().split(/\r?\n/).map(line=>line?`> ${line}`:'').join('\n')}`;
+export function sourceQuote(record, excerpt, {injection=false} = {}) {
+  return `${injection?'原文摘录：':`原文依据（第 ${record.floorIndex} 楼，摘录）：`}\n${excerpt.trim().split(/\r?\n/).map(line=>line?`> ${line}`:'').join('\n')}`;
 }

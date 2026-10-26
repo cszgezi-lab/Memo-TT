@@ -189,13 +189,22 @@ export function mergePersonaDevelopment(updates,{previous=[],messages,identity,n
   return {items:[...items.values()],rejected};
 }
 
-export function personaDevelopmentText(items,{evolution=false}={}){
+export function personaDevelopmentText(items,{evolution=false,injection=false}={}){
   const current=items.filter(e=>e.phase!=='historical');
   if(!current.length)return '';
   // An empty target does not assert a universal interpersonal attitude. Old
   // saved compositions keep their exact projection for request replay.
   const groups=new Map();
   for(const e of [...current].sort((a,b)=>b.floor-a.floor)){const key=e.target||'';if(!groups.has(key))groups.set(key,[]);groups.get(key).push(e);}
+  if(injection)return '【当前变化】\n'+[...groups].map(([target,rows])=>[
+    target?`对象：${target}`:evolution?'对象：自身／未指定':'对象：所有人／自身',
+    ...rows.map(e=>[
+      `${e.topic}${e.scope?' · '+e.scope:''}${e.storyTime?' · '+e.storyTime:''}：${e.after}`,
+      e.cause?`缘由：${e.cause}`:'',
+      e.originChange?.floor!==e.floor&&e.originChange?.after?`最早转折 · 历史${e.originChange.storyTime?' · '+e.originChange.storyTime:''}：${e.origin?e.origin+' → ':''}${e.originChange.after}${e.originChange.cause?'；缘由：'+e.originChange.cause:''}`:
+        e.originChange?.cause&&e.originChange.floor!==e.floor?`最早转折 · 历史${e.originChange.storyTime?' · '+e.originChange.storyTime:''}：${e.originChange.cause}`:'',
+    ].filter(Boolean).join('\n')),
+  ].join('\n')).join('\n\n');
   const floors=e=>e.evidenceReceipt?.parts?.length===2&&e.evidenceReceipt.parts.every(p=>Number.isSafeInteger(p?.floor))?`${e.evidenceReceipt.parts[0].floor}–${e.evidenceReceipt.parts[1].floor}`:e.floor;
   const lines=[...groups].map(([target,rows])=>[
     target?`▶ 对${target}`:evolution?'▶ 自身变化或未指定外部对象':'▶ 对所有人或自身',

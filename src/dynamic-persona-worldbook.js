@@ -175,7 +175,7 @@ export function createPersonaWorldbook({host=globalThis,check=()=>{},context=()=
       replacedFragments++;replacedEntries.add(prepared.entries.get(key));
       if(source)replacedCardFields++;
       if(used.has(id))return '';used.add(id);
-      const text=renderText(`【${p.name}·当前动态人设，依据至 #${p.through}；更新楼层后的正文优先${mode==='strict'?'':'；剧情主导，MVU仅作参考'}】\n${textForProfile(p)}`);
+      const text=renderText(`【${p.name}·当前动态人设｜当前变化优先｜${mode==='strict'?'MVU阶段约束':'剧情主导·MVU参考'}】\n${textForProfile(p)}`);
       insertedTexts.push(text);return text;
     });
     return {injected:[...used],replacedEntries:replacedEntries.size,replacedFragments,restoredFragments,replacedCardFields,rejectedSources:[...rejectedSources],missingCardProfiles:missingCardProfiles.size,stalePreparedProfiles:stalePreparedProfiles.size,insertedTexts};

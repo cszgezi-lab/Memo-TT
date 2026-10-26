@@ -496,7 +496,7 @@ function retireExactSupersededInstructions(composition,identity){
   }
 }
 
-export function personaCompositionText(composition,{hasSources=false}={}){
+export function personaCompositionText(composition,{hasSources=false,injection=false}={}){
   const {parts=[],notes='',sceneEvidence=[],development=[]}=composition;
   const examples=currentPersonaExamples(composition.examples??[],development);
   const projectedParts=personaProjectedSourceParts(parts);
@@ -516,6 +516,22 @@ export function personaCompositionText(composition,{hasSources=false}={}){
   // the latest state. In particular B patches can apply while an N patch is
   // pending; those retained notes must not outrank the confirmed current arc.
   const notesPending=Boolean(composition.pendingRevision)||(composition.pendingEdits??[]).some(e=>e.kind==='notes');
+  // Only structured, program-owned headings are shortened. Saved prose,
+  // including text that happens to resemble a heading or source label, stays
+  // verbatim; the detail/save projection below remains unchanged.
+  if(injection){
+    const changes=personaDevelopmentText(development,{evolution:composition.evolutionVersion===1,injection:true});
+    return [
+      changes,
+      notes&&!notesPending?`【当前补充】\n${notes}`:'',
+      currentParts.length?`【当前设定】\n${currentParts.map(personaSourcePartText).join('')}`:'',
+      focus.length?`【核对依据】\n${focus.map(q=>q.quote).join('\n')}`:'',
+      examples.length?`【原话】\n${examples.map(q=>`${q.to?'对'+q.to+'：':''}${q.text}${q.context?'〔'+q.context+'〕':''}`).join('\n')}`:'',
+      ...blocks.map(b=>`【${(b.speech||b.allQuoted)?(b.source==='chat'?'档案引语':'原书范例'):'当前设定'}${b.title?' · '+b.title:''}】\n${b.text}`),
+      notes&&notesPending?`【待核对旧补充】\n${notes}`:'',
+      sceneEvidence.length?`【当时外观】\n${sceneEvidence.map(e=>e.text).join('\n')}`:'',
+    ].filter(Boolean).join('\n\n');
+  }
   const retainedNotes=notes&&notesPending?`【保留旧补充 · 更新尚待核对，不作为当前态度指令】\n${notes}\n此区保留未变资料与旧来源；有冲突的态度、权限和口吻不覆盖上方已确认的同对象、同情境变化，待核对候选不作已确认。`:'';
   // Put the replaceable current snapshot before retained stable/history prose.
   // Long chats otherwise make an early relationship phase visually dominate a

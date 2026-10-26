@@ -1,4 +1,6 @@
 import { normalizeTerms, normalizeTags } from './product-dictionary.js';
+import { stableStringify } from './utils.js';
+import { hasStoryTime } from './temporal.js';
 export const relationLabel = value => ({expression:'单方表达',response:'对方回应',mutual_confirmation:'双方确认',boundary:'相处边界',shared_experience:'共同经历',habit:'相处习惯',background:'背景关系'})[value] ?? value ?? '关系变化';
 export const epistemicLabel = value => ({observed:'正文明确',user_asserted:'用户确认',character_claim:'角色自述',inferred:'推测而非事实',unknown:'未确认'})[value] ?? value;
 export const scopeLabel = value => typeof value==='string'?({temporary:'临时表现',stable:'稳定表现',situational:'特定情境',permanent:'长期',unknown:'未确认'})[value]??value:value;
@@ -42,6 +44,35 @@ export function fullSearchText(card,body) {
 export const stateLabel=value=>({proposed:'提出',attempted:'尝试',accepted:'接受',completed:'完成',declined:'拒绝',canceled:'取消',resolved:'已解决',active:'有效',unknown:'待核对'})[value]??value;
 export const awarenessLabel=value=>({known:'知道',heard:'听说',suspected:'怀疑',mistaken:'误以为',explicitly_unaware:'明确不知情'})[value]??value;
 export const viaLabel=value=>({witnessed:'亲眼见证',heard_in_scene:'现场听见',read:'阅读获知',told:'被告知',background:'背景已知',user_confirmed:'用户确认',special_ability:'特殊能力获知',unknown:'渠道未注明'})[value]??value??'渠道未注明';
+
+// Sending view only. Keep facts verbatim and share headings only in a
+// consecutive, equal person/time/scope run within the caller's own snapshot.
+// Status and acquisition channel stay on each fact; no state is inferred.
+const awarenessNames=value=>Array.isArray(value)?value.flatMap(awarenessNames):value&&typeof value==='object'?awarenessNames(value.name??value.id):typeof value==='string'&&value.trim()?[value.trim()]:[];
+const compactSubject=row=>{const named=[row.person,row.audience].flatMap(awarenessNames);return [...new Set(named.length?named:[row.subject,row.actorId,row.personId].flatMap(awarenessNames))].join('、');};
+export function compactAwarenessText(rows, { subjectLabel = compactSubject } = {}) {
+  const parts=[];let previousKey=null,previousLine=null;
+  for(const row of rows){
+    const subject=subjectLabel(row)||compactSubject(row)||'未注明人物';
+    const time=hasStoryTime(row.learnedAt)?narrativeText(row.learnedAt):'';
+    const access=row.acquisitionEvidence?.method==='context-review-v1'?row.acquisitionEvidence.access:null;
+    const scope={target:row.target??row.object??row.objectRef??null,scope:row.scope??null,context:row.context??null,access:access??null};
+    const key=stableStringify({subject,learnedAt:row.learnedAt??null,...scope});
+    if(key!==previousKey){
+      const qualifiers=[time?`获知：${time}`:'',scope.target?`对象：${narrativeText(scope.target)}`:'',scope.scope?`范围：${narrativeText(scope.scope)}`:'',scope.context?`情境：${narrativeText(scope.context)}`:'',access?`获知范围：${narrativeText(access)}`:''].filter(Boolean);
+      parts.push(`${subject}${qualifiers.length?'｜'+qualifiers.join('；'):''}：`);
+      previousKey=key;previousLine=null;
+    }
+    const status=awarenessLabel(row.status??row.knowledgeStatus)||'未确认';
+    const via=row.via&&row.via!=='unknown'?viaLabel(row.via):'';
+    const fact=narrativeText(row.knowledge??row.fact??row.content);
+    const line=`- ${status}${via?'·'+via:''}：${fact}`;
+    // Only adjacent exact repeats; A -> B -> A must retain the final A.
+    if(line!==previousLine)parts.push(line);
+    previousLine=line;
+  }
+  return parts.join('\n');
+}
 
 export function recallExplanation(trace={}){
   const matched=(trace.dictionary?.matched??[]).map(t=>`${t.matched.join('、')} → ${t.name}`);
