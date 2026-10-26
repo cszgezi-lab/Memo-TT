@@ -1,6 +1,6 @@
 import { humanValidationIssueText } from './validation-diagnostics.js';
 import {PERSONA_ISSUES} from './persona-validation.js';
-import { upstreamErrorCode,upstreamErrorHint,PERSONA_STEPS,DIAGNOSTIC_REASONS } from './diagnostics.js';
+import { upstreamErrorCode,upstreamErrorHint,upstreamErrorContext,PERSONA_STEPS,DIAGNOSTIC_REASONS } from './diagnostics.js';
 import {PRODUCT_SETTING_REGISTRY} from './product-settings.js';
 
 const NETWORK = {
@@ -421,6 +421,7 @@ export function productFailure(error) {
   if(code==='PERSISTENCE_ERROR'&&['vector_jobs','vector_index','vector_staging'].includes(error?.details?.storageArtifact)){
     message='向量本机保存未通过校验，已保存的故事记忆不受影响。可在召回 → 向量重试未完成项，无需重新总结；具体保存阶段见日志。';
   }
+  if(['unsupported_parameter','output_limit'].includes(error?.details?.upstreamHint)){const d=error.details;message=`${d.upstreamHint==='unsupported_parameter'?'接口不支持请求参数':'接口拒绝回复上限'}${d.upstreamParam?` ${d.upstreamParam}`:''}${Number.isSafeInteger(d.upstreamLimit)?`，服务上限 ${d.upstreamLimit}`:''}${Number.isSafeInteger(d.upstreamRequested)?`，本次 ${d.upstreamRequested}`:''}。请在 API 设置中调整，已保存批次保留。`;}
   if(error?.details?.upstreamHint==='content_blocked')message='服务错误报文明确提到内容过滤；这不是 JSON 填写或回复上限问题。请检查服务规则与输入内容，已保存的记忆保留。';
   if(error?.details?.upstreamHint==='context_limit')message='服务报文明确提到上下文超限；请核对该接口实际支持的上下文及日志中的输入体积。增大回复上限不能解决输入超限。已保存批次保留。';
   if(code==='SUMMARY_RESPONSE_ERROR'&&error?.details?.reason==='invalid_model_json'){
@@ -490,6 +491,6 @@ export function providerEnvelopeFailure(response) {
   const rawStatus=response?.status??response?.error?.status??String(response?.message??'').match(/\b(?:HTTP(?:\s+error)?|status(?:\s+code)?)\s*[:=]?\s*([45]\d\d)\b/i)?.[1];
   const status=Number(rawStatus);
   const upstreamCode=upstreamErrorCode(response);
-  return Object.assign(new Error('模型服务返回错误'),{code,details:{...(Number.isInteger(status)&&status>=400&&status<=599?{status}:{}),...(upstreamCode?{upstreamCode}:{}),upstreamHint:upstreamErrorHint(response)}});
+  return Object.assign(new Error('模型服务返回错误'),{code,details:{...upstreamErrorContext(response),...(Number.isInteger(status)&&status>=400&&status<=599?{status}:{}),...(upstreamCode?{upstreamCode}:{}),upstreamHint:upstreamErrorHint(response)}});
 }
 export const modelListFailure = providerEnvelopeFailure;

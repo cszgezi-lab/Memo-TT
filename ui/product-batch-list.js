@@ -36,7 +36,7 @@ export function paintPlannedBatchPreview(node,state,kind='memory'){
   if(count&&forecast.known){const active=formal.filter(r=>r.status!=='deleted'),pending=forecast.items.length+[...active,...candidate].filter(r=>['queued','pending','running','failed','interrupted','staged'].includes(r.status)).length,unapplied=candidate.filter(r=>r.status==='saved').length;count.textContent=[`${active.length+candidate.length+forecast.items.length} 批`,pending?`${pending} 批待处理`:null,unapplied?`${unapplied} 批候选待应用`:null].filter(Boolean).join(' · ');}
   const stamp=JSON.stringify([forecast,formal.map(r=>[r.startIndex,r.endIndex,r.status]),candidate.map(r=>[r.startIndex,r.endIndex,r.status])]);if(node.dataset.forecastStamp===stamp)return;node.dataset.forecastStamp=stamp;
   const label=r=>`${r.startIndex}–${r.endIndex} 楼`;
-  node.innerHTML=!forecast.known?'':`<header class="memo-forecast-heading"><b>待处理 ${forecast.items.length} 批</b><span>每批 ${forecast.batchSize} 楼 · 保留 ${forecast.keepRecent} 楼</span></header><div class="memo-forecast-grid">${forecast.items.map((r,i)=>`<details class="memo-compact-batch" data-planned-range="${r.startIndex}-${r.endIndex}" data-compact-start="${r.startIndex}"><summary aria-label="${label(r)} · 待处理"><span data-compact-number>${String(i+1).padStart(2,'0')}</span><span class="memo-compact-dot" data-state="planned" title="待处理"></span></summary><div class="memo-compact-detail"><b>${label(r)}</b><p>待处理</p></div></details>`).join('')}</div>`;
+  node.innerHTML=!forecast.known?'':`<header class="memo-forecast-heading"><b>待处理 ${forecast.items.length} 批</b><span>每批 ${forecast.batchSize} 楼 · 保留 ${forecast.keepRecent} 楼</span></header><div class="memo-forecast-grid">${forecast.items.map((r,i)=>`<details class="memo-compact-batch" data-planned-range="${r.startIndex}-${r.endIndex}" data-compact-start="${r.startIndex}"><summary aria-label="${label(r)} · 待处理"><span data-compact-number>${String(i+1).padStart(2,'0')}</span><span class="memo-compact-dot" data-state="planned" title="待处理"></span></summary><div class="memo-compact-detail"><b>${label(r)}</b><p>待处理</p></div></details>`).join('')}</div>${forecast.waiting.length?`<p class="memo-help">已累计 ${forecast.waiting.at(-1).endIndex-forecast.waiting.at(-1).startIndex+1}/${forecast.batchSize} 楼</p>`:''}`;
 }
 
 export function batchManagementHTML(){return `<details class="memo-compact-management"><summary>管理</summary><p data-batch-plan class="memo-help"></p>
@@ -55,7 +55,7 @@ export function mountBatchList({panel,app,run,host}){
     const rows=(s.batches??[]).filter(b=>selected.has(b.id)),single=rows.length===1?rows[0]:null;
     $('[data-batch-selection-toolbar]').hidden=!selecting||!rows.length;
     if(!rows.length)$('[data-batch-selection-more]').open=false;
-    const toggle=$('[data-batch-select-toggle]');toggle.textContent=selecting?'取消':'选择';toggle.setAttribute('aria-pressed',String(selecting));toggle.setAttribute('aria-expanded',String(selecting));
+    const toggle=$('[data-batch-select-toggle]');toggle.textContent=selecting?'取消多选':'多选删除';toggle.setAttribute('aria-pressed',String(selecting));toggle.setAttribute('aria-expanded',String(selecting));
     for(const label of panel.querySelectorAll('[data-batch-check]'))label.hidden=!selecting;
     for(const button of panel.querySelectorAll('[data-retry-batch-vectors-all]'))button.disabled=s.busy;
     $('[data-selected-count]').textContent=`已选 ${selected.size} 批（跨页保留）${rows.some(b=>b.replacement&&!b.savedOperationId)?'；成功候选尚未应用，可在此应用连续已完成前段。':''}`;

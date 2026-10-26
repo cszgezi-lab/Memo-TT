@@ -36,15 +36,21 @@ async function migrateWorkspace(){
     await appScope.globalWorkspace.write('legacy-imported',{at:Date.now()});
   }
 
-async function refresh({boundOnly=false,summaryCommit=false,check:parentCheck,view:reusableView}={}) {
+async function refresh({boundOnly=false,summaryCommit=false,bookkeepingOnly=false,check:parentCheck,view:reusableView}={}) {
     parentCheck?.();
     if(appScope.tracking&&!boundOnly&&(!appScope.workspace?.isCurrent()||appScope.state.stale)){await appScope.followCurrentChat();parentCheck?.();if(!appScope.workspace?.isCurrent())throw Object.assign(new Error('当前没有可读取的聊天'),{code:'CHAT_REF_UNAVAILABLE'});return;}
     const mutationKey=appScope.memoryMutationKey(),mutation=appScope.memoryMutationGuards.get(mutationKey),mutationRevision=mutation?.revision;
     if(mutation?.pending.size)throw appScope.pendingMemoryMutation();
-    appScope.recallBusy++; if(!summaryCommit)appScope.recallChanged();
+    appScope.recallBusy++; if(!summaryCommit&&!bookkeepingOnly)appScope.recallChanged();
     try {
     const token = appScope.epoch, bound = appScope.workspace,check=()=>{appScope.assertCurrent(token);parentCheck?.();};check();
     const view = await appScope.core.readMemoryView({check,...(reusableView?{reuse:reusableView}:{})});check();
+    if(bookkeepingOnly){
+      await readBatches(view,{check});check();appScope.state.memoryControls=view.controls??{};appScope.state.summaryHold=view.controls?.automation?.summaryHold??null;
+      if(appScope.memoryMutationKey()!==mutationKey||appScope.memoryMutationGuards.get(mutationKey)!==mutation||mutation&&(mutation.pending.size||mutation.revision!==mutationRevision))throw appScope.pendingMemoryMutation();
+      if(mutation)appScope.memoryMutationGuards.delete(mutationKey);
+      appScope.notify();return view;
+    }
     const validity = await appScope.core.sourceValidity(view.records ?? {},{includeMessages:true});
     check();
     const liveChat=mvuContext(appScope.host)?.chat;

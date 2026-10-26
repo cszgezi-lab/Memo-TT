@@ -19,6 +19,7 @@ import {transientSummaryError,recoveryAttemptLimit,recoveryDelay,repairCategorie
 import {summaryTransportOptions} from './summary-transport.js';
 import { selectSummaryContextAsync, summarySources } from './summary-context.js';
 import { runSummaryStages, isolateDraftIds } from './summary-stages.js';
+import {compactSummarySystem,compactSummaryContract,summaryReasoningOptions} from './summary-request-policy.js';
 import { referenceRepairRequest, applyReferenceRepair } from './summary-reference-repair.js';
 import { verificationRequest, verificationEnvelope, compactVerificationHints, applyVerificationProgress, verificationCounts, VERIFICATION_POLICY, VERIFICATION_MODULES } from './summary-verification.js';
 import { planSummaryRequests } from './summary-planner.js';
@@ -171,6 +172,7 @@ function modelEnvelope(request) {
     const localKeys=new Set(['scope','committedRevision','sourceRevision','configVersion','rulesVersion','focusVersion','budget','coverage']);
     value.extractionContext=Object.fromEntries(Object.entries(value.extractionContext??{}).filter(([key])=>!localKeys.has(key)));
   }
+  if(request.kind==='ShiyiSummaryRequest'&&!request.summaryStage&&value.extractionContext?.outputContract)value.extractionContext={...value.extractionContext,outputContract:compactSummaryContract(value.extractionContext.outputContract)};
   return verificationEnvelope(value);
 }
 
@@ -213,6 +215,7 @@ function modelInvoker(model,{armor=null,preferBuffered=false,preferStreaming=fal
       const envelope=modelEnvelope(request);
       let payload={
       model: model.profile?.model,
+      ...summaryReasoningOptions(model.profile),
       ...(preferStreaming?{stream:true}:preferBuffered?{stream:false}:summaryTransportOptions(model.profile)),
       ...(Number.isSafeInteger(request?.effectiveMaxTokens) && request.effectiveMaxTokens > 0
         ? { max_tokens: request.effectiveMaxTokens }
@@ -222,6 +225,7 @@ function modelInvoker(model,{armor=null,preferBuffered=false,preferStreaming=fal
         { role: 'user', content: JSON.stringify(envelope) },
       ],
       };
+      if(request.kind==='ShiyiSummaryRequest'&&!request.summaryStage)payload.messages[0].content=compactSummarySystem(payload.messages[0].content,PRESET_TRANSPORT_GUARD);
       const unarmoredChars=payload.messages.reduce((n,m)=>n+m.content.length,0);
       payload=applySummaryArmor(payload,armor);
       Object.defineProperty(payload,'_armorInputChars',{value:payload.messages.reduce((n,m)=>n+m.content.length,0)-unarmoredChars});
@@ -663,11 +667,13 @@ export class SummaryEngine {
     const contextBinding=value=>sha256({scope:value.scope,sourceRevision:value.sourceRevision,rules:value.rules,focus:value.focusSpec,configVersion:value.configVersion,rulesVersion:value.rulesVersion});
     const initialContextBinding=contextBinding(batch);
     const initialContextRevision=this.packRequests&&typeof this.repository.getCommittedRevision==='function'?await this.repository.getCommittedRevision(batch.scope):null;
+    const historyStarted=Date.now();
     let summaryContext=this.packRequests&&this.repository.readSummaryContext&&this.repository.verifySummaryContext&&this.repository.releaseSummaryContext
       ? await this.repository.readSummaryContext(batch.scope,{check:()=>throwIfAborted(signal)}) : null;
     const releaseContext=()=>{if(summaryContext){this.repository.releaseSummaryContext(summaryContext.token);summaryContext=null;}};
     try {
     const authoritativeRecords = summaryContext?.records ?? (this.packRequests && this.repository.listRecords ? await this.repository.listRecords(batch.scope) : null);
+    emit('preparation',{prepareStep:'history_read',elapsedMs:Date.now()-historyStarted,historyRecordCount:Object.values(authoritativeRecords??{}).reduce((n,rows)=>n+(Array.isArray(rows)?rows.length:0),0)});
     let plannedFirstRequest=null;
     const contextReadRevision=initialContextRevision!==null?await this.repository.getCommittedRevision(batch.scope):null;
     const children = this.packRequests ? await planSummaryRequests(batch, {
@@ -676,7 +682,9 @@ export class SummaryEngine {
       checkpointPlan: checkpoint?.splitPlan,
       signal,
       prepare: async child => {
+        const buildStarted=Date.now();
         const prepared=await this._prepareRequest(child, batch, { relevantRecords, authoritativeRecords, signal });
+        emit('preparation',{prepareStep:'select_and_build',elapsedMs:Date.now()-buildStarted,startIndex:child.childRange?.startIndex,endIndex:child.childRange?.endIndex});
         if(child.childRange.childIndex===0)plannedFirstRequest={key:sha256(child),prepared};
         return prepared;
       },

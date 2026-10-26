@@ -88,7 +88,6 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     get dynamicPersona(){return dynamicPersona;},
     get enabled(){return enabled;}, set enabled(value){enabled=value;},
     get epoch(){return epoch;}, set epoch(value){epoch=value;},
-    get exportRawBackup(){return exportRawBackup;},
     get feedbackSequence(){return feedbackSequence;}, set feedbackSequence(value){feedbackSequence=value;},
     get fetchImpl(){return fetchImpl;},
     get followNotBefore(){return followNotBefore;}, set followNotBefore(value){followNotBefore=value;},

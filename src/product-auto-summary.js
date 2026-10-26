@@ -42,9 +42,9 @@ export function advancedStartFloor(coverage,startFloor=1){
   const next=(coverage?.coveredRanges??[]).reduce((value,range)=>range.startIndex<=value?Math.max(value,range.endIndex+1):value,startFloor);
   return next>startFloor?next:null;
 }
-export function missingSummaryRanges(coverage,batchSize){
+export function missingSummaryRanges(coverage,batchSize,{fullBatchesOnly=false}={}){
   if(!Number.isSafeInteger(batchSize)||batchSize<1)throw new Error('每批楼数无效');
-  return coverage.missingRanges.flatMap(r=>Array.from({length:Math.ceil((r.endIndex-r.startIndex+1)/batchSize)},(_,i)=>({startIndex:r.startIndex+i*batchSize,endIndex:Math.min(r.endIndex,r.startIndex+(i+1)*batchSize-1)})));
+  return coverage.missingRanges.flatMap(r=>Array.from({length:(fullBatchesOnly?Math.floor:Math.ceil)((r.endIndex-r.startIndex+1)/batchSize)},(_,i)=>({startIndex:r.startIndex+i*batchSize,endIndex:Math.min(r.endIndex,r.startIndex+(i+1)*batchSize-1)})));
 }
 // Display history independently from the moving automatic cursor. Saved floors
 // within keepRecent still count once; reserved unsaved floors are not failures.

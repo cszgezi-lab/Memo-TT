@@ -113,16 +113,29 @@ export function upstreamErrorCode(value){
 // Interpret only the service's error fields, never generated model content.
 // Persist fixed labels rather than raw messages (which may echo keys/prompts).
 // These are reported causes, not proof inferred from HTTP 502 or elapsed time.
-export const UPSTREAM_HINTS=Object.freeze({timeout:'服务报文提到上游等待超时',overloaded:'服务报文提到模型繁忙',connection_reset:'服务报文提到上游连接断开',context_limit:'服务报文提到输入上下文超限',content_blocked:'服务错误报文明确提到内容过滤',unknown:'服务未提供可识别的原因'});
+export const UPSTREAM_HINTS=Object.freeze({unsupported_parameter:'服务不支持该请求参数',output_limit:'服务报文提到回复上限超限',timeout:'服务报文提到上游等待超时',overloaded:'服务报文提到模型繁忙',connection_reset:'服务报文提到上游连接断开',context_limit:'服务报文提到输入上下文超限',content_blocked:'服务错误报文明确提到内容过滤',unknown:'服务未提供可识别的原因'});
 export function upstreamErrorHint(value){
   const fields=errorLayers(value).flatMap(row=>[row.message,row.code,row.type,typeof row.error==='string'?row.error:null]);
   const text=fields.filter(v=>typeof v==='string').map(v=>v.slice(0,4096)).join(' ');
+  if(/unsupported (?:parameter|argument)|unrecognized (?:request )?(?:argument|parameter)|unknown (?:parameter|argument)|(?:参数|字段).{0,12}(?:不支持|无法识别)/i.test(text))return 'unsupported_parameter';
+  if(/(?:max_tokens|max_completion_tokens).{0,100}(?:at most|maximum|less than|exceed)|(?:输出|回复).{0,12}(?:超限|超过)/i.test(text))return 'output_limit';
   if(/\b(?:content_filter|content_policy_violation|safety_blocked|blocked by safety|blocked due to safety)\b|(?:内容|安全策略)(?:审查|过滤|拦截|违规)|因安全.{0,6}(?:拦截|阻止)/i.test(text))return 'content_blocked';
   if(/context_length_exceeded|maximum context length|context (?:window|length|limit).{0,40}(?:exceed|limit)|上下文.{0,12}(?:超限|超过)/i.test(text))return 'context_limit';
   if(/\b(?:timeout|timed out|deadline exceeded|DEADLINE_EXCEEDED)\b|(?:请求|上游|等待|连接)超时/i.test(text))return 'timeout';
   if(/\b(?:overloaded|overload|model is busy|capacity exhausted)\b|(?:模型|服务).{0,4}(?:繁忙|过载)/i.test(text))return 'overloaded';
   if(/\b(?:ECONNRESET|connection reset|unexpected EOF|connection closed|socket hang up)\b|上游连接.{0,4}(?:断开|关闭|重置)/i.test(text))return 'connection_reset';
   return 'unknown';
+}
+const providerParams=new Set(['model','messages','max_tokens','max_completion_tokens','reasoning_effort','thinking_budget','tools','tool_choice','response_format','temperature','top_p','stream']);
+/** Numeric/enum evidence only: error messages may echo entire prompts or keys. */
+export function upstreamErrorContext(value){
+  const layers=errorLayers(value),text=layers.flatMap(r=>[r.message,typeof r.error==='string'?r.error:'']).filter(x=>typeof x==='string').map(x=>x.slice(0,4096)).join(' ');
+  const param=layers.map(r=>r.param??r.parameter).find(x=>providerParams.has(x))??[...providerParams].find(x=>new RegExp('\\b'+x+'\\b').test(text));
+  const result={};if(param)result.upstreamParam=param;
+  for(const [key,pattern]of [['upstreamLimit',/(?:at most|maximum(?: context length)?(?: is)?|limit(?: is)?|上限(?:为)?)[ :：]*(\d{1,10})/i],['upstreamRequested',/(?:requested|received|got|请求值)[ :：]*(\d{1,10})/i]]){
+    const match=text.match(pattern);if(match&&Number(match[1])<=2147483647)result[key]=Number(match[1]);
+  }
+  return result;
 }
 // Read only the first message line inside a reserved host error envelope.
 // Never search a generated answer, an endpoint, or arbitrary follow-up advice.
@@ -226,6 +239,10 @@ export function safePersonaValidationDetails(value,{compact=false}={}){
 }
 export function safeDiagnosticFields(value={}){
   const result={};
+  if(providerParams.has(value?.upstreamParam))result.upstreamParam=value.upstreamParam;
+  if(['history_read','select_and_build'].includes(value?.prepareStep))result.prepareStep=value.prepareStep;
+  for(const key of ['upstreamLimit','upstreamRequested','historyRecordCount'])if(Number.isSafeInteger(value?.[key])&&value[key]>=0&&value[key]<=2147483647)result[key]=value[key];
+  if(typeof value?.requestFingerprint==='string'&&/^[a-f0-9]{64}$/.test(value.requestFingerprint))result.requestFingerprint=value.requestFingerprint;
   // Fixed regex metadata locates a failed rule without storing its expression,
   // name, id, source prose or arbitrary exception text. The index is only the
   // cumulative guard's trigger position, not a per-rule performance judgment.

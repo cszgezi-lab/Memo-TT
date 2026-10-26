@@ -1,6 +1,6 @@
 import { ShiyiError, SummaryResponseError } from './errors.js';
 import { clone, sha256 } from './utils.js';
-import { diagnosticRequestId, errorDiagnostics, jsonFailure, contentType,upstreamErrorCode,upstreamErrorHint } from './diagnostics.js';
+import { diagnosticRequestId, errorDiagnostics, jsonFailure, contentType,upstreamErrorCode,upstreamErrorHint,upstreamErrorContext } from './diagnostics.js';
 import {scheduleDeadline} from './request-deadline.js';
 import {createChatEventStreamParser} from './provider-stream.js';
 import {providerQueueScope} from './provider-scheduler.js';
@@ -179,7 +179,7 @@ export async function parseProviderJson(response, { requireStatus = true, onMeta
     const upstreamCode=upstreamErrorCode(errorBody),upstreamHint=upstreamErrorHint(errorBody);
     const header=response?.headers?.get?.('retry-after'),seconds=header&&Number(header);
     const retryAfterMs=header?(Number.isFinite(seconds)?Math.max(0,seconds*1000):Math.max(0,Date.parse(header)-Date.now())):0;
-    throw new ShiyiError(`provider returned HTTP ${status}`, 'PROVIDER_HTTP_ERROR', { ...metadata,stage:'request',reason:'http_error',bodyChars:body.length,upstreamDetailsProvided:Boolean(body.trim()),upstreamCode,upstreamHint,...(Number.isFinite(retryAfterMs)&&retryAfterMs>0?{retryAfterMs}: {}) });
+    throw new ShiyiError(`provider returned HTTP ${status}`, 'PROVIDER_HTTP_ERROR', { ...metadata,...upstreamErrorContext(errorBody),stage:'request',reason:'http_error',bodyChars:body.length,upstreamDetailsProvided:Boolean(body.trim()),upstreamCode,upstreamHint,...(Number.isFinite(retryAfterMs)&&retryAfterMs>0?{retryAfterMs}: {}) });
   }
   let text;
   if(allowStream){
@@ -220,7 +220,7 @@ export class ProviderClient {
     const started=Date.now(),observer=onDiagnostic??observers.get(this.fetch);let finished=false;
     const emit=(phase,details={},level='info')=>{if(finished)return;try{observer?.({phase,level,details:{requestId,purpose:purpose??resource,modelRole:this.modelRole,elapsedMs:Date.now()-started,...details}});}catch{/* diagnostics never fail a request */}};
     const serialized=JSON.stringify(payload??{});
-    const requestMeta={...(resource==='chat'?{streaming:payload?.stream===true,jsonMode:Boolean(payload?.response_format),messageCount:payload?.messages?.length??0}:{}),providerFingerprint:sha256({url:resolveProviderEndpoint(this.profile,resource),model:payload?.model??this.profile.model}),requestChars:serialized.length,requestBytes:new TextEncoder().encode(serialized).length};
+    const requestMeta={requestFingerprint:sha256(serialized),...(resource==='chat'?{streaming:payload?.stream===true,jsonMode:Boolean(payload?.response_format),messageCount:payload?.messages?.length??0}:{}),providerFingerprint:sha256({url:resolveProviderEndpoint(this.profile,resource),model:payload?.model??this.profile.model}),requestChars:serialized.length,requestBytes:new TextEncoder().encode(serialized).length};
     let lease,networkStarted;
     try {
       const scheduler=resource==='chat'?schedulers.get(this.fetch):null;

@@ -3,6 +3,7 @@ import { clone, isPlainObject, stableStringify } from './utils.js';
 import { SUMMARY_OUTPUT_CONTRACT } from './contracts.js';
 import { moduleSummaryContract, moduleSummaryInstructions } from './summary-wire.js';
 import { SUMMARY_FACTUAL_RULE } from './character-journal.js';
+import {compactSummarySystem,compactSummaryContract} from './summary-request-policy.js';
 
 // Defaults come from the actual transport prompt, not a second example prompt.
 const contract = moduleSummaryContract(SUMMARY_OUTPUT_CONTRACT);
@@ -84,6 +85,8 @@ export function summaryPresetPreview(preset) {
   preset=validateSummaryPreset(preset);
   const defaults=defaultSummaryPreset(),unchanged=preset.instructions===defaults.instructions&&stableStringify(preset.rules)===stableStringify(defaults.rules)&&!summaryArmorEnabled(preset.armor);
   const preview={system:unchanged?moduleSummaryInstructions:`${PRESET_TRANSPORT_GUARD}\n${preset.instructions}`,outputContract:applySummaryPreset(moduleSummaryContract(SUMMARY_OUTPUT_CONTRACT),unchanged?null:preset)};
+  preview.system=compactSummarySystem(preview.system,PRESET_TRANSPORT_GUARD);
+  preview.outputContract=compactSummaryContract(preview.outputContract);
   if(!Object.hasOwn(preset,'armor'))return preview;
   const payload=applySummaryArmor({stream:true,messages:[{role:'system',content:preview.system},{role:'user',content:JSON.stringify({sourceMessages:[],outputContract:preview.outputContract})}]},preset.armor);
   return {...preview,system:payload.messages[0].content,armor:summaryArmorPreview(preset.armor),transport:{stream:true,...(payload.tools?{tools:payload.tools,tool_choice:payload.tool_choice}:{})}};

@@ -65,7 +65,7 @@ async function publishSummaryReplacement(replacement,op){
 
 async function summarize(options={}){return appScope.logged('summary',run=>summarizeTask({...options,diagnosticRun:run}),{trigger:options.trigger??'manual'});}
 
-async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigger='manual',replaceBatchId=null,resume=false,rebuildCandidate=false,missingOnly=false,previewHash=null,diagnosticRun,allowInvalidToolRetry=false}={}){
+async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigger='manual',replaceBatchId=null,resume=false,rebuildCandidate=false,missingOnly=false,fullBatchesOnly=false,previewHash=null,diagnosticRun,allowInvalidToolRetry=false}={}){
     const taskStarted=Date.now();let firstRequestAt=null,modelMs=0,publishMs=0;
     if(trigger==='manual'&&!replaceBatchId){
       const version=appScope.cancelVersion;
@@ -83,7 +83,7 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
       op.check();const lastIndex=await appScope.core.historyTail();op.check();
       appScope.state.autoLastIndex=lastIndex;
       if(missingOnly)batchSize=appScope.core.settings.autoSummaryEvery;
-      const missing=missingOnly?missingSummaryRanges(summaryCoverage(appScope.validAutomaticBatches(),{startFloor:appScope.state.autoStartFloor??1,lastIndex,keepRecent:appScope.core.settings.autoKeepRecent,batchSize}),batchSize):null;
+      const missing=missingOnly?missingSummaryRanges(summaryCoverage(appScope.validAutomaticBatches(),{startFloor:appScope.state.autoStartFloor??1,lastIndex,keepRecent:appScope.core.settings.autoKeepRecent,batchSize}),batchSize,{fullBatchesOnly}):null;
       let ranges=missingOnly?missing.map(r=>({...r,startIndex:Math.max(r.startIndex,startIndex??r.startIndex),endIndex:Math.min(r.endIndex,endIndex??r.endIndex)})).filter(r=>r.startIndex<=r.endIndex):planSummaryRanges({count:count??appScope.core.settings.messageCount,startIndex,endIndex,lastIndex,batchSize});
       if(!ranges.length){appScope.summaryFeedback('success','当前可处理楼层没有缺口；没有调用总结模型。',trigger);return {status:'complete',batches:0};}
       let groupId=makeId('summary-group');
@@ -214,8 +214,12 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
       if(op.token===appScope.epoch&&appScope.activeSummaryOperation===op)appScope.summaryFeedback(op.signal.aborted?'info':'error',`${op.signal.aborted?'总结已停止':'总结未完成'}；已保存 ${saved} 批。${failureText(error)}`,trigger);
       if(currentBatch&&appScope.workspace?.isCurrent()&&op.token===appScope.epoch&&appScope.activeSummaryOperation===op){
         const failed={...currentBatch,status:op.signal.aborted?'interrupted':'failed',error:failureText(error)};
+        appScope.state.batches=appScope.state.batches.map(b=>b.id===failed.id&&b.operationId===failed.operationId?{...b,status:failed.status,error:failed.error}:b);
+        appScope.summaryFeedback(op.signal.aborted?'info':'error',failed.error,trigger);
         await appScope.workspace.update('summary-batches',rows=>rows.map(b=>b.id===failed.id&&b.operationId===failed.operationId&&b.status==='running'?failed:b),[]).catch(()=>{});
-        await appScope.refresh().catch(()=>{});
+        // A rejected provider request has no newly activated memory. Avoid a
+        // full archive/source scan solely to display its failed batch status.
+        if(!['request','read_body','parse_envelope'].includes(error.details?.stage))await appScope.refresh().catch(()=>{});
       }
       appScope.runtimeLog.record({run:diagnosticRun,task:'summary',phase:'queue_remaining',details:{savedBatches:saved,pendingBatches:remainingPlanned}});
       if(op.token===appScope.epoch&&appScope.activeSummaryOperation===op)appScope.summaryFeedback(op.signal.aborted?'info':'error',`${op.signal.aborted?'总结已停止':'总结未完成'}；已保存 ${saved} 批${remainingPlanned?`，另有 ${remainingPlanned} 批排队保留` :''}。${failureText(error)}`,trigger);
@@ -389,6 +393,10 @@ async function manageBatchesTask(ids,action,options,check){
     }
     if(!['delete','restore'].includes(action))throw new Error('未知批量操作');
     const operations={};
+    // Empty queued/failed attempts have no formal records to reproject.
+    const beforeView=action==='delete'?await appScope.core.readMemoryView({check}):null;check();
+    const affectedOps=new Set(targets.flatMap(batchOperationIds));
+    const bookkeepingOnly=action==='delete'&&targets.every(b=>!savedBatchOperation(b)&&!b.replacementReady)&&!(beforeView.records?.history??[]).some(h=>[...affectedOps].some(id=>h.operationId===id||h.operationId?.startsWith(id+'/child-')));
     // Removing a queued member does not manufacture a completed group. It
     // can be restored to the same pending slot until that plan is explicitly
     // cut off; a split parent or an abandoned tail belongs to a closed plan.
@@ -414,7 +422,7 @@ async function manageBatchesTask(ids,action,options,check){
     if(hold)appScope.state.summaryHold=hold;
     check();
     await appScope.trackedMemoryMutation(mutation,()=>appScope.workspace.update('summary-batches',list=>list.map(row=>selected.includes(row.id)?{...row,status:action==='delete'?'deleted':restorableCandidate(row)?'queued':'saved',...(action==='restore'&&restorableCandidate(row)&&!row.replacementReady?{freshStart:true}:{}),savedOperationId:savedBatchOperation(row),operationId:action==='restore'?(savedBatchOperation(row)??row.operationId):row.operationId}:row),[],{check}));check();
-    await appScope.refresh({check,view:applied?.memoryView});check();appScope.setMessage(action==='delete'?cascadedCount>0?`已撤下 ${directCount} 批（另有 ${cascadedCount} 批因人设连续性自动撤下）；已应用记忆可恢复，未应用候选不会进入正式记忆；聊天原文未改变`:`已撤下 ${targets.length} 批；已应用记忆可恢复，未应用候选不会进入正式记忆；聊天原文未改变`:`已恢复 ${targets.length} 批`);
+    await appScope.refresh({check,view:applied?.memoryView,bookkeepingOnly});check();appScope.setMessage(action==='delete'?cascadedCount>0?`已撤下 ${directCount} 批（另有 ${cascadedCount} 批因人设连续性自动撤下）；已应用记忆可恢复，未应用候选不会进入正式记忆；聊天原文未改变`:`已撤下 ${targets.length} 批；已应用记忆可恢复，未应用候选不会进入正式记忆；聊天原文未改变`:`已恢复 ${targets.length} 批`);
     await appScope.runtimeLog.record({task:'summary',phase:'commit',level:'success',details:{reason:action==='delete'?'summary_batches_deleted':'summary_batches_restored',startIndex:Math.min(...targets.map(b=>b.startIndex)),endIndex:Math.max(...targets.map(b=>b.endIndex)),beforeBatches:rows.filter(b=>b.status!=='deleted').length,afterBatches:appScope.state.batches.filter(b=>b.status!=='deleted').length,modelRequested:false}});
     // 撤下或恢复批次都会改变真实覆盖，起算楼层跟着回到正确位置（删除的楼层重新变成待总结）。
     check();try{await appScope.syncAutoStartFloor(undefined,{check});}catch(error){check();void appScope.reportError(error,{task:'summary',stage:'auto_start_floor'});}check();
