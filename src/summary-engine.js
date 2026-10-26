@@ -191,7 +191,7 @@ function summarySizeDetails(payload,serialized){
   if(!Array.isArray(envelope?.sourceMessages))return result;
   const chars=value=>JSON.stringify(value).length;
   const armorInputChars=payload._armorInputChars??0;
-  const baseSystemChars=payload.messages.filter(m=>m.role==='system').reduce((n,m)=>n+m.content.length,0)-armorInputChars;
+  const baseSystemChars=payload.messages.filter(m=>m.role==='system').reduce((n,m)=>n+m.content.length,0)-(payload._armorSystemChars??armorInputChars);
   Object.assign(result,{sentSourceTextChars:envelope.sourceMessages.reduce((n,m)=>n+(typeof m.text==='string'?m.text.length:0),0),
     sourceSectionChars:chars(envelope.sourceMessages),bridgeSectionChars:chars(envelope.bridgeMessages??[]),
     historySectionChars:chars(envelope.relevantRecords??{}),schemaSectionChars:chars(envelope.extractionContext?.outputContract??envelope.outputContract??{}),
@@ -227,8 +227,10 @@ function modelInvoker(model,{armor=null,preferBuffered=false,preferStreaming=fal
       };
       if(request.kind==='ShiyiSummaryRequest'&&!request.summaryStage)payload.messages[0].content=compactSummarySystem(payload.messages[0].content,PRESET_TRANSPORT_GUARD);
       const unarmoredChars=payload.messages.reduce((n,m)=>n+m.content.length,0);
+      const unarmoredSystemChars=payload.messages.filter(m=>m.role==='system').reduce((n,m)=>n+m.content.length,0);
       payload=applySummaryArmor(payload,armor);
       Object.defineProperty(payload,'_armorInputChars',{value:payload.messages.reduce((n,m)=>n+m.content.length,0)-unarmoredChars});
+      Object.defineProperty(payload,'_armorSystemChars',{value:payload.messages.filter(m=>m.role==='system').reduce((n,m)=>n+m.content.length,0)-unarmoredSystemChars});
       const readings=[...(envelope.sourceMessages??[]),...(envelope.bridgeMessages??[])].map(m=>m._reading).filter(Boolean);
       Object.defineProperty(payload,'_outputContract',{value:envelope.extractionContext?.outputContract});
       // Report the same filtered source that is actually sent, not the frozen

@@ -61,6 +61,12 @@ export function createChatEventStreamParser({allowUnmarkedJson=false}={}){
     if(trailingCR){trailingCR='';push('\n');}
     if(pending.trim())consume(pending);
     const text=content.join('');
+    // Some relays put a standalone prompt-rejection notice in delta.content,
+    // then send usage and DONE without finish_reason. Match this observed
+    // notice at the start, not policy words quoted inside valid summary JSON.
+    if(!tool&&text.length<=4096&&/^The prompt could not be submitted\.\s+The prompt contains sensitive words that violate Google's \[Generative AI Prohibited Use policy\]\(https:\/\/policies\.google\.com\/terms\/generative-ai\/use-policy\)\./.test(text.trim())){
+      throw new ShiyiError('provider rejected the prompt','PROVIDER_STREAM_ERROR',{reason:'output_blocked',upstreamHint:'content_blocked',stage:'read_body',streamChunks:chunks,responseChars:text.length,finishReason:finish??'missing',streamDone:done});
+    }
     let json;
     if(!tool&&text.trim().startsWith('{'))try{json=JSON.parse(text);}catch{/* normal content validation handles syntax */}
     if(json?.error){

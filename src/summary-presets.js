@@ -89,5 +89,6 @@ export function summaryPresetPreview(preset) {
   preview.outputContract=compactSummaryContract(preview.outputContract);
   if(!Object.hasOwn(preset,'armor'))return preview;
   const payload=applySummaryArmor({stream:true,messages:[{role:'system',content:preview.system},{role:'user',content:JSON.stringify({sourceMessages:[],outputContract:preview.outputContract})}]},preset.armor);
-  return {...preview,system:payload.messages[0].content,armor:summaryArmorPreview(preset.armor),transport:{stream:true,...(payload.tools?{tools:payload.tools,tool_choice:payload.tool_choice}:{})}};
+  const compatibilityPadding=JSON.parse(payload.messages[1].content).compatibilityPadding;
+  return {...preview,system:payload.messages[0].content,...(compatibilityPadding?{compatibilityPadding}:{}),armor:summaryArmorPreview(preset.armor),transport:{stream:true,...(payload.tools?{tools:payload.tools,tool_choice:payload.tool_choice}:{})}};
 }
