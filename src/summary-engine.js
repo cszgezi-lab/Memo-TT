@@ -27,6 +27,7 @@ import { planSummaryRequests } from './summary-planner.js';
 import { moduleSummaryContract, moduleSummaryInstructions, expandModuleSummary, expandCompactSummary, normalizedModuleSourceRefs, moduleLinkNormalization, unwrapModuleSummaryResponse } from './summary-wire.js';
 import { applySummaryPreset, summaryPresetFromRules, PRESET_TRANSPORT_GUARD } from './summary-presets.js';
 import {parseSummaryJson} from './summary-json.js';
+import {discardInvalidDetailRows,withSummaryRowIsolation} from './summary-row-isolation.js';
 import {summaryKnowledgeSources,SUMMARY_KNOWLEDGE_EVIDENCE_RULE} from './summary-knowledge-evidence.js';
 import {NARRATIVE_READING_RULE,narrativeCounters,assertNarrativeReadingContent,isNarrativeRegexConfig} from './narrative-reading.js';
 
@@ -34,7 +35,7 @@ function responseStatus(response) {
   return Number(response?.status ?? response?.statusCode ?? 200);
 }
 
-const invalidResponseSource = validation => validation?.validationIssues?.some(issue => ['source_mismatch','unknown_source','missing_source','source_ambiguous'].includes(issue.reason));
+const invalidResponseSource = validation => validation?.validationIssues?.some(issue => !/^(events|awarenessChanges|entityFactChanges|relationshipChanges|personaChanges|commitmentChanges|performanceHints|conflicts)\[/.test(issue.path??'')&&['source_mismatch','unknown_source','missing_source','source_ambiguous'].includes(issue.reason));
 
 async function readRawBody(response) {
   if (response?.aborted || response?.bodyAborted || response?.truncated || response?.complete === false) {
@@ -877,9 +878,11 @@ export class SummaryEngine {
         const prior=this.recoveryEnabled?await this.repository.readPrivateTask?.(child.scope,child.operationId):null;
         if(prior?.binding&&prior.binding!==resultBinding)throw new ScopeConflictError('saved response source or rules changed');
         if(prior?.manualRetryRequired&&prior.retryModel&&!allowInvalidToolRetry)throw manualToolRetryRequired();
+        let skippedDetailRows=false;
+        const reportSkipped=details=>{skippedDetailRows=true;emit('records_skipped',{...baseDetails,skippedRecords:details.skippedRecords,validationIssueCount:details.validationIssues.length,validationIssues:details.validationIssues},'warning');};
         const keepResponse=async raw=>{
           throwIfAborted(signal);
-          if(!this.recoveryEnabled||!this.repository.savePrivateTask)return;
+          if(skippedDetailRows||!this.recoveryEnabled||!this.repository.savePrivateTask)return;
           const previousPhase=phase;phase='response_saved';
           const patch={binding:resultBinding,raw,retryModel:false};
           this.repository.retainPrivateResponse?.(child.scope,child.operationId,patch);
@@ -905,7 +908,7 @@ export class SummaryEngine {
           try{
             const cached=unwrapModuleSummaryResponse(await parseModelResponse(prior.raw,{allowToolTransport:this.summaryArmor.antiTruncation}));
             const allowed=new Set([...child.sourceMessages,...child.bridgeMessages].map(m=>m.id));
-            cachedForeignSource=DRAFT_CATEGORIES.some(k=>Array.isArray(cached?.[k])&&cached[k].some(row=>{
+            cachedForeignSource=['summaryView'].some(k=>Array.isArray(cached?.[k])&&cached[k].some(row=>{
               if(typeof row?.sourceId==='string'&&!allowed.has(row.sourceId))return true;
               const refs=Array.isArray(row?.sourceRefs)?row.sourceRefs.flatMap(r=>r&&Object.keys(r).length===1&&Array.isArray(r.sourceRefs)?r.sourceRefs:[r]):[];
               return refs.some(r=>typeof r?.sourceId==='string'&&!allowed.has(r.sourceId));
@@ -978,7 +981,7 @@ export class SummaryEngine {
           parsed={...parsed};for(const key of VERIFICATION_MODULES)if(!Object.hasOwn(parsed,key))parsed[key]=[];
         }
         phase='validate';
-        const expanded=expandModuleSummary(expandCompactSummary(parsed,child.sourceMessages),child.sourceMessages);
+        const expanded=withSummaryRowIsolation(parsed,value=>expandModuleSummary(expandCompactSummary(value,child.sourceMessages),child.sourceMessages),reportSkipped);
         if(expanded!==parsed){
           const links=moduleLinkNormalization(parsed,expanded,child.sourceMessages);
           emit('normalize',{...baseDetails,...links,normalizedSourceRefs:normalizedModuleSourceRefs(parsed,expanded),compactFloors:expanded.summaryView.length,compactChanges:Object.keys(expanded).filter(k=>!['events','summaryView'].includes(k)&&Array.isArray(expanded[k])).reduce((n,k)=>n+expanded[k].length,0)},links.resolvedSourceTextHints||links.wholeFloorEventAnnotations?'warning':'success');
@@ -1081,7 +1084,7 @@ export class SummaryEngine {
           focusVersion: focusFingerprint(child.focusSpec, child.focusVersion),
           correctionAuthorizations,
         });
-        let bundle=bindOutput(output);
+        let bundle=withSummaryRowIsolation(output,bindOutput,reportSkipped);
         const detailRows=DRAFT_CATEGORIES.flatMap(k=>Array.isArray(bundle[k])?bundle[k]:[]);
         const timeCorrections=detailRows.flatMap(r=>(r.timeCorrections??[]).map(c=>({recordId:r.id,path:c.path,sourceId:c.sourceId,method:c.method})));
         if(timeCorrections.length)emit('validate',{...baseDetails,sourceTimeCorrections:timeCorrections.length},'info');
@@ -1154,6 +1157,13 @@ export class SummaryEngine {
         const deferredKnowledge=(bundle.awarenessChanges??[]).filter(r=>r.knowledgeReview?.status==='pending').length;
         const deferredCount=deferredCommitments+deferredKnowledge;
         if(deferredCount)emit('records_deferred',{...baseDetails,deferredRecords:deferredCount,deferredCommitments,deferredKnowledge},'warning');
+        await tryQuarantineEnums();
+        while(!validation.valid){
+          const isolated=discardInvalidDetailRows(bundle,validation);
+          if(!isolated.skippedRecords)break;
+          bundle=isolated.output;reportSkipped(isolated);
+          validation=validateDraftBundle(bundle,validationOptions);
+        }
         if(!validation.valid&&this.recoveryEnabled&&!this.verified){
           const repairRequest=referenceRepairRequest(request,bundle,validation);
           if(repairRequest){
