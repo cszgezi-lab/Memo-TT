@@ -168,7 +168,7 @@ async function readErrorBody(response,onBody,signal){
   finally{closed=true;clearTimeout(timer);controller.abort();signal?.removeEventListener('abort',relay);}
 }
 
-export async function parseProviderJson(response, { requireStatus = true, onMetadata=()=>{},onBody=()=>{},allowStream=false,signal } = {}) {
+export async function parseProviderJson(response, { requireStatus = true, onMetadata=()=>{},onBody=()=>{},allowStream=false,allowUnmarkedJson=false,signal } = {}) {
   const status = Number(response?.status ?? response?.statusCode ?? 200);
   const mime=response?.headers?.get?.('content-type')??'';
   const metadata={status,statusKnown:response?.status!==undefined||response?.statusCode!==undefined,responseType:/json/i.test(mime)?'json':/html/i.test(mime)?'html':/text/i.test(mime)?'text':mime?'other':'unknown'};
@@ -183,7 +183,7 @@ export async function parseProviderJson(response, { requireStatus = true, onMeta
   }
   let text;
   if(allowStream){
-    const parser=createChatEventStreamParser(),json=[],declaredStream=/event-stream/i.test(mime),prefixes=['data:','event:','id:','retry:'];let mode=null,probe='';
+    const parser=createChatEventStreamParser({allowUnmarkedJson}),json=[],declaredStream=/event-stream/i.test(mime),prefixes=['data:','event:','id:','retry:'];let mode=null,probe='';
     await readBody(response,onBody,signal,{collect:false,onText:chunk=>{
       if(mode==='sse'){parser.push(chunk);return;}
       if(mode==='json'){json.push(chunk);return;}
@@ -216,7 +216,7 @@ export class ProviderClient {
     this.modelRole=modelRole;
   }
 
-  async request(resource, payload, { signal, timeoutMs, headers = {}, method = 'POST', requestId=diagnosticRequestId(), purpose, onDiagnostic, rpmLimit=0, minIntervalMs=0,bypassForeground=false } = {}) {
+  async request(resource, payload, { signal, timeoutMs, headers = {}, method = 'POST', requestId=diagnosticRequestId(), purpose, onDiagnostic, rpmLimit=0, minIntervalMs=0,bypassForeground=false,allowUnmarkedJson=false } = {}) {
     const started=Date.now(),observer=onDiagnostic??observers.get(this.fetch);let finished=false;
     const emit=(phase,details={},level='info')=>{if(finished)return;try{observer?.({phase,level,details:{requestId,purpose:purpose??resource,modelRole:this.modelRole,elapsedMs:Date.now()-started,...details}});}catch{/* diagnostics never fail a request */}};
     const serialized=JSON.stringify(payload??{});
@@ -230,13 +230,13 @@ export class ProviderClient {
       }
       networkStarted=Date.now();
       emit('request',{stage:'request',...requestMeta,queueWaitMs:lease?.queueWaitMs??0,maxTokens:payload?.max_tokens??0,timeoutMs:timeoutMs??this.profile.timeoutMs});
-      return await this.performRequest(resource,payload,{signal,timeoutMs,headers,method,emit});
+      return await this.performRequest(resource,payload,{signal,timeoutMs,headers,method,emit,allowUnmarkedJson});
     }
     catch(thrown){const error=thrown instanceof Error?thrown:new ShiyiError('provider threw a non-Error value','PROVIDER_REQUEST_FAILED');error.details={stage:'prepare',...requestMeta,...error.details,...lease?.finish(error),queueWaitMs:lease?.queueWaitMs??(networkStarted===undefined?Math.max(0,Date.now()-started):0),requestElapsedMs:networkStarted===undefined?0:Math.max(0,Date.now()-networkStarted),requestId,purpose:purpose??resource};emit(error.code==='CANCELED'?'canceled':'failed',errorDiagnostics(error),error.code==='CANCELED'?'warning':'error');throw error;}
     finally{lease?.finish();finished=true;}
   }
 
-  async performRequest(resource, payload, { signal, timeoutMs, headers, method, emit }) {
+  async performRequest(resource, payload, { signal, timeoutMs, headers, method, emit,allowUnmarkedJson }) {
     const receivingStarted=Date.now(),receiveMeta={};
     const onBody=buffered=>{
       if(receiveMeta.firstBodyMs!==undefined)return;
@@ -277,7 +277,7 @@ export class ProviderClient {
         if(controller.signal.aborted)throw new ShiyiError('request canceled','CANCELED');
         const response=await this.fetch(url,init);
         if(controller.signal.aborted){discardResponseBody(response);throw new ShiyiError('request canceled','CANCELED');}
-        return parseProviderJson(response,{allowStream:resource==='chat'&&payload?.stream===true,signal:controller.signal,onBody,onMetadata:details=>{receiveMeta.responseHeadersMs=Date.now()-receivingStarted;emit('response',{...details,...receiveMeta,stage:'read_body'});}});
+        return parseProviderJson(response,{allowStream:resource==='chat'&&payload?.stream===true,allowUnmarkedJson,signal:controller.signal,onBody,onMetadata:details=>{receiveMeta.responseHeadersMs=Date.now()-receivingStarted;emit('response',{...details,...receiveMeta,stage:'read_body'});}});
       })(), canceled]);
       const message=result?.choices?.[0]?.message;
       emit('complete',{stage:'parse_envelope',...receiveMeta,...result?._shiyiStream,contentType:contentType(message?.content??result),responseChars:typeof message?.content==='string'?message.content.length:undefined,choicesCount:Array.isArray(result?.choices)?result.choices.length:undefined,toolCallsCount:message?.tool_calls?.length,finishReason:result?.choices?.[0]?.finish_reason,promptTokens:result?.usage?.prompt_tokens,completionTokens:result?.usage?.completion_tokens,totalTokens:result?.usage?.total_tokens},'success');

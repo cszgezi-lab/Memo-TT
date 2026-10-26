@@ -3,7 +3,7 @@ import { sha256, makeId, stableStringify } from '../utils.js';
 import { numberedSummaryBatches, planSummaryRanges, batchRecords, MEMORY_CATEGORIES, batchOperationIds, sameBatchRange, savedBatchOperation, summaryOverwritePlan } from '../product-batches.js';
 import { failureText } from '../product-feedback.js';
 import { createWorkspace } from '../product-workspace.js';
-import { summaryCoverage, missingSummaryRanges } from '../product-auto-summary.js';
+import { summaryCoverage, missingSummaryRanges, retireIncompleteSyncTails } from '../product-auto-summary.js';
 import { errorDiagnostics } from '../diagnostics.js';
 import { qualityTargets } from '../product-quality-plan.js';
 import { runStorageOperation } from '../reliable-storage.js';
@@ -83,7 +83,17 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
       op.check();const lastIndex=await appScope.core.historyTail();op.check();
       appScope.state.autoLastIndex=lastIndex;
       if(missingOnly){await appScope.syncAutoStartFloor(diagnosticRun,{check:op.check});op.check();batchSize=appScope.core.settings.autoSummaryEvery;}
-      const missing=missingOnly?missingSummaryRanges(summaryCoverage(appScope.validAutomaticBatches(),{startFloor:appScope.state.autoStartFloor??1,lastIndex,keepRecent:appScope.core.settings.autoKeepRecent,batchSize}),batchSize,{fullBatchesOnly}):null;
+      const coverage=missingOnly?summaryCoverage(appScope.validAutomaticBatches(),{startFloor:appScope.state.autoStartFloor??1,lastIndex,keepRecent:appScope.core.settings.autoKeepRecent,batchSize}):null;
+      if(missingOnly&&fullBatchesOnly){
+        const oldRows=await appScope.workspace.read('summary-batches',[]);op.check();
+        const rows=retireIncompleteSyncTails(oldRows,coverage,batchSize);
+        if(rows.some((row,i)=>row!==oldRows[i])){
+          await appScope.workspace.write('summary-batches',rows);op.check();
+          const byId=new Map(rows.map(row=>[row.id,row]));
+          appScope.state.batches=appScope.state.batches.map(row=>byId.get(row.id)?.retiredReason==='sync_incomplete_tail'?{...row,status:'deleted',retiredReason:'sync_incomplete_tail'}:row);appScope.notify();
+        }
+      }
+      const missing=missingOnly?missingSummaryRanges(coverage,batchSize,{fullBatchesOnly}):null;
       let ranges=missingOnly?missing.map(r=>({...r,startIndex:Math.max(r.startIndex,startIndex??r.startIndex),endIndex:Math.min(r.endIndex,endIndex??r.endIndex)})).filter(r=>r.startIndex<=r.endIndex):planSummaryRanges({count:count??appScope.core.settings.messageCount,startIndex,endIndex,lastIndex,batchSize});
       if(!ranges.length){appScope.summaryFeedback('success','当前可处理楼层没有缺口；没有调用总结模型。',trigger);return {status:'complete',batches:0};}
       let groupId=makeId('summary-group');
@@ -192,19 +202,10 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
         // summary lock. The batch's durable autoIndex marker survives reloads.
       }
       if(stagedOnly){appScope.summaryFeedback('info','覆盖候选已保存，旧记忆仍在使用；请继续未完成批次，整组成功后替换。',trigger);return {status:'staged',batches:saved};}
-      // All source-valid summaries are already durable. Merge is a separate
-      // task and cannot mark any of these batches as failed or roll them back.
-      let mergeWarning=false;
-      if(appScope.core.settings.autoMergeEnabled&&!usedVerification&&!appScope.core.settings.summaryReviewEnabled&&(appScope.state.merges??[]).some(j=>j.status==='pending')){
-        appScope.summaryFeedback('running',`总结已保存 ${saved} 批，正在独立核对事件合并…`,trigger);
-        try{const report=await appScope.processMergeQueue(op,null,{automatic:true});mergeWarning=report.remaining>0;}
-        catch(error){mergeWarning=true;void appScope.reportError(error,{task:'merge',stage:'background'});}
-      }
-      const awaiting=(appScope.state.merges??[]).filter(j=>['pending','failed','uncertain','missing'].includes(j.status)).length;
-      mergeWarning ||= (appScope.state.merges??[]).some(j=>['failed','uncertain','missing'].includes(j.status));
+      // Event decisions were finalized by the committed memory refresh.
       if(automaticQualityIds.length)appScope.queueAutomaticQuality(automaticQualityIds);
-      if(op.token===appScope.epoch)appScope.summaryFeedback(mergeWarning||bookkeepingWarning||deferredRecords?'warning':'success',`总结成功并已保存：#${ranges[0].startIndex}–${ranges.at(-1).endIndex}，共 ${saved} 批。${deferredRecords?`${deferredRecords} 条记忆待核对，暂不注入；可在记忆 → 内容校对中单独修正。`:''}${bookkeepingWarning?'批次进度资料待恢复，记忆正文已确认保存，无需重新生成。':''}${awaiting||mergeWarning?'合并尚未全部完成，可在总结 → 事件合并中单独处理；无需重做总结。':''}`,trigger);
-      return {status:'saved',batches:saved,level:mergeWarning||bookkeepingWarning||deferredRecords?'warning':'success',timings:{prepareMs:(firstRequestAt??Date.now())-taskStarted,modelMs,publishMs}};
+      if(op.token===appScope.epoch)appScope.summaryFeedback(bookkeepingWarning||deferredRecords?'warning':'success',`总结成功并已保存：#${ranges[0].startIndex}–${ranges.at(-1).endIndex}，共 ${saved} 批。${deferredRecords?`${deferredRecords} 条记忆待核对，暂不注入；可在记忆 → 内容校对中单独修正。`:''}${bookkeepingWarning?'批次进度资料待恢复，记忆正文已确认保存，无需重新生成。':''}`,trigger);
+      return {status:'saved',batches:saved,level:bookkeepingWarning||deferredRecords?'warning':'success',timings:{prepareMs:(firstRequestAt??Date.now())-taskStarted,modelMs,publishMs}};
     }catch(error){
       // Report the API failure before potentially slow native bookkeeping.
       // The final log also carries the durable logical-batch count, not just

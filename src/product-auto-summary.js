@@ -46,6 +46,17 @@ export function missingSummaryRanges(coverage,batchSize,{fullBatchesOnly=false}=
   if(!Number.isSafeInteger(batchSize)||batchSize<1)throw new Error('每批楼数无效');
   return coverage.missingRanges.flatMap(r=>Array.from({length:(fullBatchesOnly?Math.floor:Math.ceil)((r.endIndex-r.startIndex+1)/batchSize)},(_,i)=>({startIndex:r.startIndex+i*batchSize,endIndex:Math.min(r.endIndex,r.startIndex+(i+1)*batchSize-1)})));
 }
+// Old sync plans included a short final row. Retire only unstarted empty work;
+// replies, attempted work and explicit replacement plans keep their identity.
+export function retireIncompleteSyncTails(rows,coverage,batchSize){
+  const tails=coverage.missingRanges.flatMap(range=>{
+    const startIndex=range.startIndex+Math.floor((range.endIndex-range.startIndex+1)/batchSize)*batchSize;
+    return startIndex<=range.endIndex?[{startIndex,endIndex:range.endIndex}]:[];
+  });
+  return rows.map(row=>row.status==='queued'&&row.freshStart&&!row.operationId&&!row.previousOperation&&!row.savedOperationId&&!row.replacement&&!row.attempts?.length&&
+    tails.some(t=>row.startIndex>=t.startIndex&&row.endIndex<=t.endIndex)
+    ?{...row,status:'deleted',retiredReason:'sync_incomplete_tail'}:row);
+}
 // Display history independently from the moving automatic cursor. Saved floors
 // within keepRecent still count once; reserved unsaved floors are not failures.
 export function summaryProgress(batches=[],options={}){

@@ -5,7 +5,7 @@ import {providerEnvelopeFailure} from './product-feedback.js';
 const invalid=(reason='stream_invalid',details={})=>{throw new SummaryResponseError('chat stream was not complete or valid',{reason,stage:'read_body',...details});};
 // One decoder for byte streams and native buffered SSE. No partial answer is
 // exposed to the business layer; errors can terminate an open connection early.
-export function createChatEventStreamParser(){
+export function createChatEventStreamParser({allowUnmarkedJson=false}={}){
   let pending='',trailingCR='',first=true,done=false,finish=null,usage,model,chunks=0,refusal='',tool=null;
   const content=[];
   function consume(event){
@@ -60,7 +60,21 @@ export function createChatEventStreamParser(){
   return {push,finish(){
     if(trailingCR){trailingCR='';push('\n');}
     if(pending.trim())consume(pending);
-    if(!done||typeof finish!=='string')invalid('stream_incomplete',{streamChunks:chunks});
+    const text=content.join('');
+    let json;
+    if(!tool&&text.trim().startsWith('{'))try{json=JSON.parse(text);}catch{/* normal content validation handles syntax */}
+    if(json?.error){
+      const error=providerEnvelopeFailure(json);
+      throw new ShiyiError('chat stream contained an error response','PROVIDER_STREAM_ERROR',{...error.details,reason:'stream_error',stage:'read_body',streamChunks:chunks,responseChars:text.length});
+    }
+    if(refusal.trim())throw new ShiyiError('chat stream refused the request','PROVIDER_STREAM_ERROR',{reason:'output_blocked',upstreamHint:'content_blocked',stage:'read_body',streamChunks:chunks,responseChars:text.length});
+    // EOF plus the provider's finish frame is sufficient. Some relays omit
+    // DONE, including after length/content_filter; preserve that actual reason.
+    // Summary callers may pass a complete JSON object onward without inventing
+    // a finish reason. Their normal source, floor and schema validators decide
+    // whether it can be saved. Never close brackets or recover a partial object.
+    const jsonComplete=allowUnmarkedJson&&!tool&&json&&typeof json==='object'&&!Array.isArray(json)&&Object.keys(json).length>0;
+    if(typeof finish!=='string'&&!jsonComplete)invalid('stream_incomplete',{streamChunks:chunks,responseChars:text.length+(tool?.function.arguments.length??0),finishReason:'missing'});
     if(tool&&finish!=='tool_calls'&&finish!=='length'&&finish!=='content_filter')invalid('stream_invalid',{streamChunks:chunks});
     return {object:'chat.completion',...(model?{model}:{}),choices:[{index:0,message:{role:'assistant',content:content.join(''),...(tool?{tool_calls:[tool]}:{}),...(refusal?{refusal}:{})},finish_reason:finish}],...(usage?{usage}:{}),_shiyiStream:{streaming:true,streamChunks:chunks}};
   }};

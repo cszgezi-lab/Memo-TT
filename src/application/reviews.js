@@ -2,7 +2,7 @@ import { failureText } from '../product-feedback.js';
 import { QUALITY_STORE_KEY, qualityStatus, qualityFingerprint, validateQualityReviewPartial, projectQualityRecords, finishQualityAttempt } from '../product-memory-quality.js';
 import { RETROSPECTIVE_STORE_KEY, projectRetrospectiveRecords } from '../product-memory-retrospective.js';
 import { runMemoryRetrospective, undoMemoryRetrospective, retrospectiveEntries, retrospectiveState } from '../product-memory-retrospective-controller.js';
-import { MERGE_STORE_KEY, MERGE_JUDGE_PROMPT, mergeDecision, mergeJudgeInput, validateMergeVote, projectMergedCards, sameMergeSnapshot, eventFingerprint } from '../product-event-merge.js';
+import { MERGE_STORE_KEY, mergeDecision, projectMergedCards, eventFingerprint } from '../product-event-merge.js';
 import { memoryCards } from '../product-memory.js';
 import { MEMORY_CATEGORIES } from '../product-batches.js';
 import { buildDictionary } from '../product-dictionary.js';
@@ -86,49 +86,10 @@ async function undoMemoryConsistency(){
     finally{op.finish();}
   }
 
-async function processMergeQueue(op,ids=null,{automatic=false}={}){
+async function processMergeQueue(op,ids=null){
     await appScope.refresh();op.check();
-    const candidates=(appScope.state.merges??[]).filter(j=>ids?ids.includes(j.id):automatic?j.status==='pending':['pending','failed','uncertain'].includes(j.status)).slice(0,10);
-    let merged=0,failed=0,processed=0,paused=false;
-    for(const initial of candidates){
-      op.check();await appScope.refresh();op.check();
-      const job=appScope.state.merges.find(j=>j.id===initial.id);if(!job)continue;
-      const snapshot=clone(appScope.state.records),input=mergeJudgeInput(snapshot,job);
-      const stamp=mergeDecision(snapshot,job,{status:'pending'});
-      const run=await appScope.runtimeLog.start('merge',{modelRole:'supplement'});op.check();
-      let decision;
-      try{
-        const messages=[{role:'system',content:MERGE_JUDGE_PROMPT},{role:'user',content:JSON.stringify(input)}];
-        const c=appScope.client('supplement'),payload={model:c.profile.model,messages,stream:false,...(appScope.core.settings.outputBudgetUnits>0?{max_tokens:appScope.core.settings.outputBudgetUnits}:{})};
-        const inputUnits=estimateUnits(JSON.stringify(payload));
-        if(inputUnits>appScope.core.settings.inputBudgetUnits)throw Object.assign(new Error('这对事件超过总结输入预算，请核对后缩短记录或提高预算'),{code:'INPUT_BUDGET_EXCEEDED'});
-        appScope.runtimeLog.record({run,task:'merge',phase:'request',details:{inputUnits,inputLimit:appScope.core.settings.inputBudgetUnits,maxTokens:appScope.core.settings.outputBudgetUnits}});
-        const response=await c.chatCompletions(payload,{signal:op.signal,timeoutMs:appScope.core.settings.deadlineMs});op.check();
-        appScope.runtimeLog.record({run,task:'merge',phase:'response',details:{finishReason:response.choices?.[0]?.finish_reason??'unknown',promptTokens:response.usage?.prompt_tokens,completionTokens:response.usage?.completion_tokens}});
-        const vote=jsonContent(completion(response).content);
-        const result=validateMergeVote(snapshot,job,vote);
-        decision=mergeDecision(snapshot,job,result,job.attempts+1);
-        appScope.runtimeLog.record({run,task:'merge',phase:result.status==='merged'?'merge_accepted':'merge_separate',level:result.status==='uncertain'?'warning':'success'});
-      }catch(error){
-        const diagnostic={...safeLogDetails(errorDiagnostics(error)),code:error?.code??'MERGE_RESPONSE_INVALID'};
-        if(op.signal.aborted||['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(error?.code)){
-          appScope.runtimeLog.record({run,task:'merge',phase:'canceled',level:'warning',details:diagnostic});throw error;
-        }
-        decision=mergeDecision(snapshot,job,{status:'failed',reason:`${failureText({code:diagnostic.code,details:diagnostic})} 原总结与旧事件均保留，可只重试合并。`},job.attempts+1);
-        failed++;paused=shouldPauseProviderBatch(error);appScope.runtimeLog.record({run,task:'merge',phase:'failed',level:'error',details:diagnostic});
-      }
-      await appScope.refresh();op.check();
-      const current=mergeDecision(appScope.state.records,job,{status:'pending'});
-      if(!sameMergeSnapshot([stamp.fromHash,stamp.toHash],[current.fromHash,current.toHash]))throw Object.assign(new Error('事件内容已变化，本次合并结果未应用'),{code:'SOURCE_INVALIDATED'});
-      await op.workspace.update(MERGE_STORE_KEY,rows=>({...rows,[job.id]:decision}),{});op.check();
-      if(decision.status==='merged')merged++;
-      appScope.runtimeLog.record({run,task:'merge',phase:'complete',level:decision.status==='failed'||decision.status==='uncertain'?'warning':'success'});
-      processed++;
-      if(paused){appScope.runtimeLog.record({run,task:'merge',phase:'service_paused',level:'warning',details:{pendingItems:candidates.length-processed}});break;}
-    }
-    await appScope.refresh();op.check();await appScope.runtimeLog.flush();
-    const remaining=(appScope.state.merges??[]).filter(j=>['pending','failed','uncertain','missing'].includes(j.status)).length;
-    return {merged,failed,processed,remaining,paused};
+    const jobs=(appScope.state.merges??[]).filter(j=>!ids||ids.includes(j.id));
+    return {merged:jobs.filter(j=>j.status==='merged').length,failed:0,processed:jobs.length,remaining:0,paused:false};
   }
 
 async function prepareQuality(op,recordIds=null,automatic=false){
@@ -272,8 +233,8 @@ async function keepMergeSeparate(id){
 async function chooseMergeTarget(id,targetId){
     appScope.assertCurrent();const op=appScope.begin();
     try{await appScope.refresh();op.check();const job={id,targetId};
-      const decision=mergeDecision(appScope.state.records,job,{status:'pending',reason:'已改选目标，等待核对；尚未合并。'});
-      await op.workspace.update(MERGE_STORE_KEY,rows=>({...rows,[id]:decision}),{});op.check();await appScope.refresh();appScope.setMessage('合并目标已更新，点击“只重试合并”进行核对。');
+      const decision=mergeDecision(appScope.state.records,job,{status:'pending',reason:'已改选目标。'});
+      await op.workspace.update(MERGE_STORE_KEY,rows=>({...rows,[id]:decision}),{});op.check();await appScope.refresh();appScope.setMessage('事件已处理。');
     }finally{op.finish();}
   }
   return Object.freeze({ queueAutomaticQuality, reviewMemoryConsistency, undoMemoryConsistency, processMergeQueue, previewQuality, inspectQualityRecord, saveQualityRecord, reviewMemory, undoQuality, retryMerges, keepMergeSeparate, chooseMergeTarget });

@@ -207,7 +207,7 @@ function modelInvoker(model,{armor=null,preferBuffered=false,preferStreaming=fal
   if (typeof model?.summarize === 'function') return model.summarize.bind(model);
   if (typeof model?.generate === 'function') return model.generate.bind(model);
   if (typeof model?.chatCompletions === 'function') {
-    const invoke = (request, options) => model.chatCompletions(invoke.providerPayload(request), options);
+    const invoke = (request, options) => model.chatCompletions(invoke.providerPayload(request), {...options,allowUnmarkedJson:true});
     // Keep the exact wire shape in one place so the host can measure the
     // serialized payload before invoking an adapter.  The adapter receives no
     // second, independently estimated request.

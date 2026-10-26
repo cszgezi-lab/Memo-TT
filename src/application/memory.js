@@ -5,7 +5,7 @@ import { batchRecords, MEMORY_CATEGORIES, editedMemoryFields, consolidateSummary
 import { QUALITY_STORE_KEY, qualityStatus, qualityEntryCurrent, projectQualityRecords } from '../product-memory-quality.js';
 import { RETROSPECTIVE_STORE_KEY, projectRetrospectiveRecords } from '../product-memory-retrospective.js';
 import { retrospectiveEntries, retrospectiveState } from '../product-memory-retrospective-controller.js';
-import { MERGE_STORE_KEY, mergeJobs, projectMergedCards } from '../product-event-merge.js';
+import { MERGE_STORE_KEY, mergeJobs, projectMergedCards, settleEventMerges } from '../product-event-merge.js';
 import { memoryCards, memoryCardsAsync } from '../product-memory.js';
 import { sha256, makeId, stableStringify } from '../utils.js';
 import { editKeepsakePatch } from '../character-journal.js';
@@ -72,7 +72,10 @@ async function refresh({boundOnly=false,summaryCommit=false,bookkeepingOnly=fals
     appScope.state.records=projectRetrospectiveRecords(appScope.state.records,retrospectiveEntries(appScope.retrospectiveSaved),view.controls,{dictionary:appScope.activeDictionary()});
     const qualityDeleted=Object.values(appScope.qualitySaved).filter(e=>qualityEntryCurrent(e,filtered)).flatMap(e=>(e.additions??[]).map(a=>a.record)).filter(r=>view.controls?.deletedRecords?.[r.id]);
     appScope.state.deletedRecords.push(...qualityDeleted);
-    const loadedMerges=await bound.read(MERGE_STORE_KEY,{});check();appScope.mergeDecisions=loadedMerges;
+    const loadedMerges=await bound.read(MERGE_STORE_KEY,{});check();
+    const settled=settleEventMerges(appScope.state.records,loadedMerges,{enabled:appScope.core.settings.autoMergeEnabled});
+    if(settled.changed){await bound.write(MERGE_STORE_KEY,settled.decisions);check();}
+    appScope.mergeDecisions=settled.decisions;
     appScope.state.merges=mergeJobs(appScope.state.records,appScope.mergeDecisions);
     try{await appScope.modules.sync();}catch(error){check();void appScope.reportError(error,{task:'background',stage:'background'});appScope.state.message='MVU 暂不可读，扩展区块没有使用旧值；可点击刷新重试';}
     const cards=await memoryCardsAsync(appScope.state.records,{hidden:appScope.state.hidden,includeAwareness:true},{check});
