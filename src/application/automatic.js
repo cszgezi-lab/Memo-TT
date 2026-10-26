@@ -17,7 +17,10 @@ async function syncAutoStartFloor(diagnosticRun,{check=()=>{}}={}){
     check();
     if(!appScope.workspace)return null;
     const start=appScope.state.autoStartFloor??1;
-    if(appScope.state.summaryHold){const floor=appScope.state.summaryHold.endIndex+1;await appScope.workspace.write('auto-progress',{startFloor:floor,updatedAt:Date.now()},{check});check();appScope.state.autoStartFloor=floor;return floor;}
+    const hold=appScope.state.summaryHold;
+    // Explicit replacement cutoffs keep their contract. A deletion pause
+    // must still reconcile later withdrawals of earlier published batches.
+    if(hold&&hold.reason!=='batch_deleted'){const floor=hold.endIndex+1;await appScope.workspace.write('auto-progress',{startFloor:floor,updatedAt:Date.now()},{check});check();appScope.state.autoStartFloor=floor;return floor;}
     const batchSize=appScope.core.settings.autoSummaryEvery,keepRecent=appScope.core.settings.autoKeepRecent;
     const lastIndex=Number.isSafeInteger(appScope.state.autoLastIndex)?appScope.state.autoLastIndex:await appScope.core.historyTail();
     check();appScope.state.autoLastIndex=lastIndex;
@@ -37,8 +40,13 @@ async function syncAutoStartFloor(diagnosticRun,{check=()=>{}}={}){
       const gap=priorCoverage.missingRanges.find(range=>range.startIndex<=Math.min(batch.endIndex,start-1)&&range.endIndex>=batch.startIndex);
       return gap?Math.min(value,Math.max(batch.startIndex,gap.startIndex)):value;
     },start);
-    const next=firstDeleted<start?firstDeleted:advanced;
+    const next=firstDeleted<start?firstDeleted:hold?start:advanced;
     if(next===null||next===start)return null;
+    if(hold&&next<hold.endIndex+1){
+      const updatedHold={...hold,endIndex:next-1};
+      await appScope.core.updateMemoryControls({automation:{summaryHold:updatedHold}},{check,returnView:'deferred'});check();
+      appScope.state.summaryHold=updatedHold;
+    }
     await appScope.workspace.write('auto-progress',{startFloor:next,updatedAt:Date.now()},{check});check();
     appScope.state.autoStartFloor=next;appScope.notify();
     appScope.runtimeLog.record({run:diagnosticRun,task:'summary',phase:'auto_start_floor',details:{startFloor:next,from:start}});

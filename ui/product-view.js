@@ -866,7 +866,7 @@ $('[data-memory-page]')?.addEventListener('change',()=>{memoryCurrentPage=Math.m
  tagSettings?.addEventListener('toggle',paintOpenedTags);
  paintOpenedTags();
  knowledgeView=mountKnowledgeView({panel,app,run,host:uiHost});
- floating=mountFloatingProduct({panel,documentRef,host,version:'1.0.0',displayName:UI_PRODUCT_LABEL,presentation:'theatre',onSettings:()=>setPage('modules'),onSearch:()=>{setPage('memory');$('[data-search]')?.focus();},onHome:()=>setPage('home'),onBack:phoneBack,onTaskDetails:()=>setPage('tasks'),onOpen:()=>{painting.flush();void app.followCurrentChat?.().catch(e=>feedback(`聊天记忆读取未完成：${failureText(e)}`,'warning'));},onClose:()=>painting.request(),onStop:()=>run(()=>app.stop()),onLogs:()=>{openLogs();}});floating.setNotice(noticeText,noticeLevel);setPage('home');
+ floating=mountFloatingProduct({panel,documentRef,host,version:PRODUCT_VERSION,displayName:UI_PRODUCT_LABEL,presentation:'theatre',onSettings:()=>setPage('modules'),onSearch:()=>{setPage('memory');$('[data-search]')?.focus();},onHome:()=>setPage('home'),onBack:phoneBack,onTaskDetails:()=>setPage('tasks'),onOpen:()=>{painting.flush();void app.followCurrentChat?.().catch(e=>feedback(`聊天记忆读取未完成：${failureText(e)}`,'warning'));},onClose:()=>painting.request(),onStop:()=>run(()=>app.stop()),onLogs:()=>{openLogs();}});floating.setNotice(noticeText,noticeLevel);setPage('home');
  let destroyed=false;
  Promise.resolve(app.loadApiSettings?.()).then(()=>{if(!destroyed){fill({apiOnly:true});paint(readViewState(app));return app.startChatTracking?.();}}).catch(e=>{if(!destroyed)feedback(`读取全局配置失败：${failureText(e)}`,'error');});
  return {panel,application:app,controller:controller??app.core,setPage,floating,openMemoryRecord,

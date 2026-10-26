@@ -82,7 +82,7 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
       if(appScope.state.stale){const probe=await appScope.core.readRange({count:1});if(probe.status!=='ready')throw new Error('请重新打开当前聊天');appScope.workspace=createWorkspace(appScope.core.workspace());}
       op.check();const lastIndex=await appScope.core.historyTail();op.check();
       appScope.state.autoLastIndex=lastIndex;
-      if(missingOnly)batchSize=appScope.core.settings.autoSummaryEvery;
+      if(missingOnly){await appScope.syncAutoStartFloor(diagnosticRun,{check:op.check});op.check();batchSize=appScope.core.settings.autoSummaryEvery;}
       const missing=missingOnly?missingSummaryRanges(summaryCoverage(appScope.validAutomaticBatches(),{startFloor:appScope.state.autoStartFloor??1,lastIndex,keepRecent:appScope.core.settings.autoKeepRecent,batchSize}),batchSize,{fullBatchesOnly}):null;
       let ranges=missingOnly?missing.map(r=>({...r,startIndex:Math.max(r.startIndex,startIndex??r.startIndex),endIndex:Math.min(r.endIndex,endIndex??r.endIndex)})).filter(r=>r.startIndex<=r.endIndex):planSummaryRanges({count:count??appScope.core.settings.messageCount,startIndex,endIndex,lastIndex,batchSize});
       if(!ranges.length){appScope.summaryFeedback('success','当前可处理楼层没有缺口；没有调用总结模型。',trigger);return {status:'complete',batches:0};}
