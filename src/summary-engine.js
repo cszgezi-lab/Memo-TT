@@ -165,7 +165,7 @@ function modelEnvelope(request) {
   assertNarrativeReadingContent(value.sourceMessages??[],request.readingConfig??request.extractionContext?.rules?.narrativeExtraction??request.recordingRules?.narrativeExtraction);
   // Keep the frozen preset locally for checkpoint identity, but transmit its
   // system prompt and writing rules once, not the entire library a second time.
-  if(preset||request.extractionContext?.rules?.narrativeExtraction)value.extractionContext={...value.extractionContext,rules:request.extractionContext.rules.recordingRules};
+  if(preset||request.extractionContext?.rules?.narrativeExtraction||request.extractionContext?.rules?.summaryCurrentOnly)value.extractionContext={...value.extractionContext,rules:request.extractionContext.rules.recordingRules};
   if(request.kind==='ShiyiSummaryRequest'&&!request.summaryStage){
     // Execution identity, revisions and planning counters are validated locally.
     // The model needs the exact sources/records/rules, not a second ID list or
@@ -474,23 +474,25 @@ export class SummaryEngine {
     this.requestLog = [];
   }
 
-  async _existingContext(scope, { sourceMessages = [], bridgeMessages = [], budgetUnits = Infinity, relevantRecords = null, authoritativeRecords = null, signal } = {}) {
+  async _existingContext(scope, { sourceMessages = [], bridgeMessages = [], budgetUnits = Infinity, relevantRecords = null, authoritativeRecords = null, signal, currentOnly=false } = {}) {
     if (typeof this.repository.listRecords !== 'function') return { records: {}, authoritativeRecords: {}, ids: new Set(), selection: { usedUnits: 0, candidateCount: 0, omittedCount: 0 } };
     authoritativeRecords ??= await this.repository.listRecords(scope);
     const ids = contextIds(authoritativeRecords);
+    if(currentOnly)return {records:{},authoritativeRecords,ids,selection:{usedUnits:0,candidateCount:0,omittedCount:0}};
     const selection = await selectSummaryContextAsync(relevantRecords ?? authoritativeRecords, [...sourceMessages,...bridgeMessages], {budgetUnits:Math.min(budgetUnits,6000),maxRecords:this.maxRelevantRecords}, {signal});
     return { records: selection.records, authoritativeRecords, ids, selection };
   }
 
   async _prepareRequest(child, batch, { relevantRecords = null, authoritativeRecords = null, signal } = {}) {
     throwIfAborted(signal);
+    const currentOnly=child.rules?.summaryCurrentOnly===true,bridgeMessages=currentOnly?[]:child.bridgeMessages??[];
     const focusForChild = focusGate(child.focusSpec);
     const wireFocusSpec = serializableFocusSpec(child.focusSpec);
     const effectiveRules = child.rules ?? child.focusSpec?.rules ?? child.focusSpec?.focusRules ?? null;
     const writingPreset=summaryPresetFromRules(effectiveRules);
     const outputContract = clone(SUMMARY_OUTPUT_CONTRACT);
     const sourceUnits = estimateUnits(JSON.stringify(summarySources(child.sourceMessages)));
-    const bridgeUnits = estimateUnits(JSON.stringify(summarySources(child.bridgeMessages ?? [])));
+    const bridgeUnits = estimateUnits(JSON.stringify(summarySources(bridgeMessages)));
     const focusRules = { focusSpec: wireFocusSpec, focus: focusForChild.focus, rules: effectiveRules, configVersion: child.configVersion, rulesVersion: child.rulesVersion };
     const focusRulesUnits = estimateUnits(JSON.stringify(writingPreset?{...focusRules,rules:effectiveRules.recordingRules}:focusRules));
     const schemaUnits = writingPreset?estimateUnits(JSON.stringify(applySummaryPreset(moduleSummaryContract(outputContract),writingPreset))+writingPreset.instructions):estimateUnits(JSON.stringify(outputContract));
@@ -505,8 +507,8 @@ export class SummaryEngine {
     const configuredLimit = Math.min(declaredLimit, this.requestSafetyUnits ?? declaredLimit);
     const contentQuota = Math.max(0, configuredLimit - sourceUnits - bridgeUnits - focusRulesUnits - schemaUnits - 1500);
     const context = relevantRecords
-      ? await this._existingContext(child.scope, { sourceMessages: child.sourceMessages, bridgeMessages: child.bridgeMessages, budgetUnits: contentQuota, relevantRecords, authoritativeRecords, signal })
-      : await this._existingContext(child.scope, { sourceMessages: child.sourceMessages, bridgeMessages: child.bridgeMessages, budgetUnits: contentQuota, authoritativeRecords, signal });
+      ? await this._existingContext(child.scope, { sourceMessages: child.sourceMessages, bridgeMessages, budgetUnits: contentQuota, currentOnly, relevantRecords, authoritativeRecords, signal })
+      : await this._existingContext(child.scope, { sourceMessages: child.sourceMessages, bridgeMessages, budgetUnits: contentQuota, currentOnly, authoritativeRecords, signal });
     const committedRevision = typeof this.repository.getCommittedRevision === 'function' ? await this.repository.getCommittedRevision(child.scope) : child.expectedRevision;
     const budget = {
       limitUnits: configuredLimit,
@@ -551,7 +553,7 @@ export class SummaryEngine {
         sourceRefs: sourceRefsFor(child),
         // Only context floors belong here. evidenceRefsFor also contains the
         // selected new floors and is reserved for local binding/validation.
-        bridgeRefs: sourceRefsFor({sourceMessages:child.bridgeMessages??[]}),
+        bridgeRefs: sourceRefsFor({sourceMessages:bridgeMessages}),
         relevantRecordIds: Object.values(context.records).flatMap((values) => (Array.isArray(values) ? values.map((record) => record?.id).filter(Boolean) : [])),
         relevantRecordCount: context.selection.candidateCount,
         omittedRelevantRecords: context.selection.omittedCount,
@@ -569,7 +571,7 @@ export class SummaryEngine {
       parentRange: clone(child.parentRange),
       childRange: clone(child.childRange),
       sourceMessages: this.staged || this.packRequests ? summarySources(child.sourceMessages) : clone(child.sourceMessages),
-      bridgeMessages: this.staged || this.packRequests ? summarySources(child.bridgeMessages ?? []) : clone(child.bridgeMessages ?? []),
+      bridgeMessages: this.staged || this.packRequests ? summarySources(bridgeMessages) : clone(bridgeMessages),
       relevantRecords: clone(context.records),
       extractionContext,
     };

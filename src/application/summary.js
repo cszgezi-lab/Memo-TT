@@ -83,7 +83,7 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
       op.check();const lastIndex=await appScope.core.historyTail();op.check();
       appScope.state.autoLastIndex=lastIndex;
       if(missingOnly){await appScope.syncAutoStartFloor(diagnosticRun,{check:op.check});op.check();batchSize=appScope.core.settings.autoSummaryEvery;}
-      const coverage=missingOnly?summaryCoverage(appScope.validAutomaticBatches(),{startFloor:appScope.state.autoStartFloor??1,lastIndex,keepRecent:appScope.core.settings.autoKeepRecent,batchSize}):null;
+      const coverage=missingOnly?summaryCoverage(appScope.validAutomaticBatches(),{advanceFromLatest:true,startFloor:appScope.state.autoStartFloor??1,lastIndex,keepRecent:appScope.core.settings.autoKeepRecent,batchSize}):null;
       if(missingOnly&&fullBatchesOnly){
         const oldRows=await appScope.workspace.read('summary-batches',[]);op.check();
         const rows=retireIncompleteSyncTails(oldRows,coverage,batchSize);
@@ -194,7 +194,7 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
         // Use the refreshed committed batches, not the pre-request running row.
         try{await appScope.syncAutoStartFloor(diagnosticRun);}catch(error){void appScope.reportError(error,{task:'summary',stage:'background'});}
         publishMs+=Date.now()-publishingAt;
-        if(appScope.core.settings.autoQualityEnabled&&!usedVerification&&!appScope.core.settings.summaryReviewEnabled){
+        if(!result.currentOnly&&appScope.core.settings.autoQualityEnabled&&!usedVerification&&!appScope.core.settings.summaryReviewEnabled){
           const batch=appScope.state.batches.find(b=>b.operationId===operationId),ids=MEMORY_CATEGORIES.flatMap(k=>batch?.records?.[k]??[]).map(r=>r.id);
           const risks=new Set(qualityTargets(appScope.state.rawRecords,appScope.qualitySaved).map(r=>r.id));
           automaticQualityIds.push(...ids.filter(id=>risks.has(id)));
@@ -219,6 +219,8 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
         appScope.state.batches=appScope.state.batches.map(b=>b.id===failed.id&&b.operationId===failed.operationId?{...b,status:failed.status,error:failed.error}:b);
         appScope.summaryFeedback(op.signal.aborted?'info':'error',failed.error,trigger);
         await appScope.workspace.update('summary-batches',rows=>rows.map(b=>b.id===failed.id&&b.operationId===failed.operationId&&b.status==='running'?failed:b),[]).catch(()=>{});
+        // Persist the forward cursor, but do not dispatch another batch here.
+        if(!op.signal.aborted)await appScope.syncAutoStartFloor(diagnosticRun,{check:op.check});
         // A rejected provider request has no newly activated memory. Avoid a
         // full archive/source scan solely to display its failed batch status.
         if(!['request','read_body','parse_envelope','parse_content'].includes(error.details?.stage))await appScope.refresh().catch(()=>{});

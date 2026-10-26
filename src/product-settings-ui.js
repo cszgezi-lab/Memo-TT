@@ -5,6 +5,7 @@ export const button = (action, label, primary = false) => `<button type="button"
 export const field = (label, input) => `<label class="memo-field"><span>${label}</span>${input}</label>`;
 const names = { base:'自动补接口路径', exact:'完整地址（不补路径）', none:'无需 Key', bearer:'标准 Key（默认）', 'api-key':'x-api-key（服务商要求时）', inherit:'沿用记录偏好', ask_manual:'手动总结时填写', ask_every:'每次总结前填写', disabled:'关闭', broadcast:'各类别均衡召回', leader_only:'仅指定通道', original:'原创', fanfiction:'同人', system:'系统', user:'用户', start:'请求开头', before_last:'最后一条消息前' };
 const copy = {
+ summaryCurrentOnly:['仅总结本批正文（不发送旧资料）','开启后只发送选定楼层提取的正文，不附旧记忆、衔接楼层或外部状态；跨批接续可能重复。仅对新建或重新生成的批次生效。'],
   knowledgeFollowAssistant:['沿用配置助手连接（默认）','已有助手 / 总结 API 就能分析资料，无需重复填写。关闭后使用本卡的独立地址、模型与 Key；不改其他任务。'],
   knowledgeOutputTokens:['字典分析回复上限（Token）','推荐 4096；每次最多分析约 6000 字原文，原文始终完整保存，AI 不负责压缩或改写资料。'],
   dynamicPersonaEvery:['每多少楼更新人物',''],
@@ -93,7 +94,7 @@ const advanced = (title, keys) => `<details class="memo-advanced memo-option-gro
 const card = (title, body) => `<details class="memo-card memo-option-group"><summary><h4>${title}</h4></summary>${body}</details>`;
 
 export const SETTING_GROUPS = Object.freeze({
-  recording: ['messageCount','summaryReviewEnabled','summaryStaged','recordingRules','focusMode','autoMergeEnabled','autoQualityEnabled','qualityBatchRecords','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize'],
+  recording: ['summaryCurrentOnly','messageCount','summaryReviewEnabled','summaryStaged','recordingRules','focusMode','autoMergeEnabled','autoQualityEnabled','qualityBatchRecords','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize'],
   automatic: ['autoSummaryEnabled','autoSummaryEvery','autoKeepRecent'],
   injection: ['injectionEnabled','retrievalLimit','retrievalBudgetUnits','timeProtection','personaEnabled','performanceEnabled','dialogueEnabled','journalEnabled','injectionPosition','injectionRole','injectionLogEnabled','skillEvidenceEnabled'],
   vectors: ['vectorEnabled','vectorAutoUpdate'],
@@ -104,7 +105,7 @@ export const SETTING_GROUPS = Object.freeze({
 });
 export function settingsSection(kind) {
   const keys = SETTING_GROUPS[kind];
-  if (kind === 'recording') return card('共同记录偏好',fields(['recordingRules','focusMode'])+'<p class="memo-help">正常游戏只需配置 API 与自动楼层规则。下方校对不是必需，开启会增加请求与等待；已有选择不会因升级改变。</p>'+advanced('可选校对（额外调用）',['summaryReviewEnabled','summaryStaged','autoMergeEnabled','autoQualityEnabled','qualityBatchRecords'])+button('per-call-mode','使用单次主总结（关闭额外校对）')+'<p class="memo-help">双次复核：每批两次；分工总结：每批两次；自动校对与合并还会按候选追加请求。双次模式超过预算会提示调整，不暗中拆批。</p>'+advanced('总结高级设置',['messageCount','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize']));
+  if (kind === 'recording') return card('共同记录偏好',fields(['summaryCurrentOnly','recordingRules','focusMode'])+'<p class="memo-help">正常游戏只需配置 API 与自动楼层规则。下方校对不是必需，开启会增加请求与等待；已有选择不会因升级改变。</p>'+advanced('可选校对（额外调用）',['summaryReviewEnabled','summaryStaged','autoMergeEnabled','autoQualityEnabled','qualityBatchRecords'])+button('per-call-mode','使用单次主总结（关闭额外校对）')+'<p class="memo-help">双次复核：每批两次；分工总结：每批两次；自动校对与合并还会按候选追加请求。双次模式超过预算会提示调整，不暗中拆批。</p>'+advanced('总结高级设置',['messageCount','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize']));
   if (kind === 'automatic') return card('自动总结',setting('autoSummaryEnabled').replace('<input','<input disabled')+fields(['autoSummaryEvery','autoKeepRecent'])+field('当前聊天从哪楼起算','<input data-auto-start type="number" min="0" value="1">')+'<p class="memo-help">新聊天默认从第 1 楼；需要包含开场白可填 0。老聊天会接着已连续总结的楼层处理。改起点只改变后续处理范围，不伪造此前的总结。</p><div class="memo-packet" data-auto-progress role="status"></div><div class="memo-actions"><button type="button" data-action="auto-save">保存自动设置</button></div><div class="memo-actions"><button type="button" data-action="auto-start">启用自动</button><button type="button" data-action="auto-pause">暂停自动</button><button type="button" data-action="auto-process">处理下一批</button></div>');
   if (kind === 'injection') return card('注入内容',fields(['injectionEnabled','retrievalLimit','retrievalBudgetUnits','timeProtection','personaEnabled','performanceEnabled','dialogueEnabled','journalEnabled','skillEvidenceEnabled'])+'<div hidden data-injection-internals>'+fields(['injectionPosition','injectionRole','injectionLogEnabled'])+'</div>');
   if (kind === 'vectors') return card('向量索引',fields(keys));

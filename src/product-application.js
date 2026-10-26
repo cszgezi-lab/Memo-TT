@@ -246,7 +246,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   const keyOrigins={},keyVersions={},keyEdited=new Set();let credentialsLoaded=false;
   const prefixFor=k=>k==='summary'?'provider':k;
   
-  const core = controller ?? createProductShellController({ host, adapterFactory: h => (hostAdapter ??= new HostAdapter(h)), adapter, fetchImpl, supplementModelFactory:()=>{if(core.settings.supplementFollowSummary&&!core.settings.supplementModel)return null;const c=client('supplement');return {profile:{model:c.profile.model,maxTokens:core.settings.outputBudgetUnits,summaryRequestMode:core.settings.summaryRequestMode,summaryStreaming:core.settings.summaryStreaming},chatCompletions:(p,o)=>c.chatCompletions(p,o)};}, onChange: () => notify(), runtimeRules: () => `故事时间以对应楼层原文为准；回忆、约定日期与当前场景日期分别记录，不套用全局日期。外部权威状态（只读）：${externalState()}\n${moduleRules(state.modules)}`, shouldInvalidate:sourceEventRelevant, summaryBundleValidator:()=>{const definitions=clone(state.modules);return bundle=>checkModuleBundle(bundle,definitions);} });
+  const core = controller ?? createProductShellController({ host, adapterFactory: h => (hostAdapter ??= new HostAdapter(h)), adapter, fetchImpl, supplementModelFactory:()=>{if(core.settings.supplementFollowSummary&&!core.settings.supplementModel)return null;const c=client('supplement');return {profile:{model:c.profile.model,maxTokens:core.settings.outputBudgetUnits,summaryRequestMode:core.settings.summaryRequestMode,summaryStreaming:core.settings.summaryStreaming},chatCompletions:(p,o)=>c.chatCompletions(p,o)};}, onChange: () => notify(), runtimeRules: ({currentOnly=false}={}) => currentOnly?moduleRules(state.modules):`故事时间以对应楼层原文为准；回忆、约定日期与当前场景日期分别记录，不套用全局日期。外部权威状态（只读）：${externalState()}\n${moduleRules(state.modules)}`, shouldInvalidate:sourceEventRelevant, summaryBundleValidator:()=>{const definitions=clone(state.modules);return bundle=>checkModuleBundle(bundle,definitions);} });
   let globalWorkspace,globalLoaded=false,globalLoading=null,assistantActive=false;
   const globalStore=async()=>{
     hostAdapter??=new HostAdapter(host);await hostAdapter.ready?.();
@@ -309,7 +309,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
 
   const moduleStamp=m=>({id:m.id??m.messageId??m.uuid,text:m.text??m.mes??m.content??'',swipe:m.swipe_id??m.swipeId,version:m.version,role:m.role??m.name,isUser:m.is_user,isSystem:m.is_system});
 
-  const summaryRecipeHash=()=>sha256([core.settings.recordingRules,core.settings.summaryPresets,core.settings.narrativeExtraction]);
+  const summaryRecipeHash=()=>sha256([core.settings.recordingRules,core.settings.summaryPresets,core.settings.narrativeExtraction,...(core.settings.summaryCurrentOnly?[true]:[])]);
   const replacementEditsHash=(ids,controls={})=>sha256(ids.map(id=>[id,controls.edits?.[id],controls.deletedRecords?.[id]]));
   const overwriteHash=plan=>sha256([plan.ranges,plan.affected.map(b=>[b.id,savedBatchOperation(b)]),plan.excludeOperations]);
 

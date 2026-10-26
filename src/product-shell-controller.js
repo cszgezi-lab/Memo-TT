@@ -561,7 +561,7 @@ export function createProductShellController({
       inputBudget: state.settings.inputBudgetUnits,
       outputBudget: state.settings.outputBudgetUnits,
       outputReserveUnits: 0,
-      recordingRules: freezeSummaryRules([state.settings.recordingRules, state.settings.skillEvidenceEnabled===true?SKILL_RECORDING_RULE:'', runtimeRules()].filter(Boolean).join('\n'),state.settings.summaryPresets,state.settings.narrativeExtraction),
+      recordingRules: freezeSummaryRules([state.settings.recordingRules, state.settings.skillEvidenceEnabled===true?SKILL_RECORDING_RULE:'', runtimeRules({currentOnly:state.settings.summaryCurrentOnly===true})].filter(Boolean).join('\n'),state.settings.summaryPresets,state.settings.narrativeExtraction,{currentOnly:state.settings.summaryCurrentOnly===true}),
       trigger,
     });
     const preflightAbort=new AbortController();abortController=preflightAbort;activeTask=operationId;
@@ -622,7 +622,7 @@ export function createProductShellController({
     summaryRepository.listRecords=async scope=>(await repository.readScope(scope,{includeOperations:[operationId],excludeOperations,includeHistory:false})).records;
     if(repository.readSummaryContext)summaryRepository.readSummaryContext=(scope,options={})=>repository.readSummaryContext(scope,{...options,includeOperations:[operationId],excludeOperations});
     try {
-      engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, preferStreaming:true, summaryArmor:summaryPresetFromRules(batch.rules)?.armor, supplementModel:supplementModelFactory?.()??null, staged:state.settings.summaryStaged, verified:state.settings.summaryReviewEnabled, isolateIds:true, packRequests:state.job.requestPlanning==='wire-v1', maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: state.job.splitUnits, requireFloorSummaries, stageCrossBatchMerges:true, recoveryEnabled:true, outputReserveUnits: 0, now });
+      engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, preferStreaming:true, summaryArmor:summaryPresetFromRules(batch.rules)?.armor, supplementModel:supplementModelFactory?.()??null, staged:state.settings.summaryStaged, verified:state.settings.summaryReviewEnabled, isolateIds:true, packRequests:state.job.requestPlanning==='wire-v1', maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: state.job.splitUnits, requireFloorSummaries, stageCrossBatchMerges:batch.rules?.summaryCurrentOnly!==true, recoveryEnabled:true, outputReserveUnits: 0, now });
       const result = await engine.process(batch, { signal: preflightAbort.signal, onDiagnostic, allowInvalidToolRetry, onSourcePlan:plan=>{
         if(!tokenValid(token,session)||preflightAbort.signal.aborted||activeTask!==operationId||abortController!==preflightAbort)throw Object.assign(new Error('任务已停止'),{code:'CANCELED'});
         if(plan.operationId!==operationId||plan.sourceRevision!==batch.sourceRevision||stableStringify(plan.scope)!==stableStringify(session.scope))throw Object.assign(new Error('总结来源计划不一致'),{code:'SOURCE_INVALIDATED'});
@@ -648,7 +648,7 @@ export function createProductShellController({
       state.capabilities.summary = 'saved_readback_verified';
       mark(PRODUCT_SHELL_STATUS.SAVED);
       state.job = { ...state.job, status: result.status, requests: result.requests, completedAt: now() };
-      return { status: PRODUCT_SHELL_STATUS.SAVED, operationId, requests: result.requests, committedRevision: snapshot.committedRevision, counts: clone(state.lastSaved.counts) };
+      return { status: PRODUCT_SHELL_STATUS.SAVED,...(batch.rules?.summaryCurrentOnly?{currentOnly:true}:{}), operationId, requests: result.requests, committedRevision: snapshot.committedRevision, counts: clone(state.lastSaved.counts) };
     } catch (error) {
       if (!tokenValid(token, session)) return { status: state.status, errorCode: state.errorCode, operationId };
       if (preflightAbort.signal.aborted || error?.code === 'CANCELED' || error?.name === 'AbortError') {
@@ -961,7 +961,7 @@ export function createProductShellController({
         // Only the selected unfinished operation can restart. A changed source
         // or rule still requires explicit regeneration; it must not be hidden
         // by advancing the repository revision under an old draft.
-        const rules=freezeSummaryRules([state.settings.recordingRules,state.settings.skillEvidenceEnabled===true?SKILL_RECORDING_RULE:'',runtimeRules()].filter(Boolean).join('\n'),state.settings.summaryPresets,state.settings.narrativeExtraction);
+        const rules=freezeSummaryRules([state.settings.recordingRules,state.settings.skillEvidenceEnabled===true?SKILL_RECORDING_RULE:'',runtimeRules({currentOnly:state.settings.summaryCurrentOnly===true})].filter(Boolean).join('\n'),state.settings.summaryPresets,state.settings.narrativeExtraction,{currentOnly:state.settings.summaryCurrentOnly===true});
         if(stableStringify(frozen.batch.rules)!==stableStringify(rules)||focus!==undefined&&String(frozen.batch.focusSpec?.focus??'')!==text(focus))throw Object.assign(new Error('本批记录规则或侧重点已变化，请重新生成；没有复用过期任务'),{code:'SOURCE_INVALIDATED'});
         const refs=[...(frozen.batch.coverage?.sourceRefs??[]),...(frozen.batch.coverage?.bridgeRefs??[])];
         const verified=await verifyProductSources(session.handle.history,{frozen:[{sourceRefs:refs}]},check);check();

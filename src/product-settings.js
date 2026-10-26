@@ -13,6 +13,7 @@ import {getNarrativeConfig} from './narrative-extraction.js';
 export const PRODUCT_SETTINGS_VERSION = 1;
 
 const DEFINITIONS = [
+  {key:'summaryCurrentOnly',label:'仅总结本批正文（不发送旧资料）',defaultValue:false,type:'boolean',consumers:['ProductShellController.createBatch','SummaryEngine']},
   {key:'skillEvidenceEnabled',label:'启用习得依据与能力约束',defaultValue:false,type:'boolean',consumers:['ProductShellController.createBatch','ProductApplication.preview','recallMemory']},
   {key:'personaReviewEnabled',label:'启用按角色辅助精修（额外调用，默认关闭）',defaultValue:false,type:'boolean',consumers:['PersonaRefinement']},
   {key:'personaReviewEndpoint',label:'人设精修 API 地址',defaultValue:'',type:'string',maxLength:2048,consumers:['PersonaRefinement']},

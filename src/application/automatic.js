@@ -1,5 +1,5 @@
 import { sourceKey } from '../product-sources.js';
-import { autoSummaryPlan, summaryCoverage, advancedStartFloor, hasNewerSavedCoverage } from '../product-auto-summary.js';
+import { autoSummaryPlan, summaryCoverage, advancedStartFloor, summaryFrontier, hasNewerSavedCoverage } from '../product-auto-summary.js';
 import { savedBatchOperation } from '../product-batches.js';
 import { stableStringify } from '../utils.js';
 import { mvuContext } from '../product-custom-modules.js';
@@ -11,7 +11,7 @@ import { failureText } from '../product-feedback.js';
 export function createAutomaticService(appScope) {
 function validAutomaticBatches(){return appScope.state.batches.filter(b=>!Object.values(b.records??{}).flat().some(r=>r.sourceRefs?.some(ref=>appScope.autoInvalidSources.has(sourceKey(ref)))));}
 
-function automaticPlan(){return autoSummaryPlan(validAutomaticBatches(),{startFloor:appScope.state.autoStartFloor??1,batchSize:appScope.core.settings.autoSummaryEvery,keepRecent:appScope.core.settings.autoKeepRecent,lastIndex:appScope.state.autoLastIndex??null});}
+function automaticPlan(){return autoSummaryPlan(validAutomaticBatches(),{advanceFromLatest:true,startFloor:appScope.state.autoStartFloor??1,batchSize:appScope.core.settings.autoSummaryEvery,keepRecent:appScope.core.settings.autoKeepRecent,lastIndex:appScope.state.autoLastIndex??null});}
 
 async function syncAutoStartFloor(diagnosticRun,{check=()=>{}}={}){
     check();
@@ -21,32 +21,9 @@ async function syncAutoStartFloor(diagnosticRun,{check=()=>{}}={}){
     // Explicit replacement cutoffs keep their contract. A deletion pause
     // must still reconcile later withdrawals of earlier published batches.
     if(hold&&hold.reason!=='batch_deleted'){const floor=hold.endIndex+1;await appScope.workspace.write('auto-progress',{startFloor:floor,updatedAt:Date.now()},{check});check();appScope.state.autoStartFloor=floor;return floor;}
-    const batchSize=appScope.core.settings.autoSummaryEvery,keepRecent=appScope.core.settings.autoKeepRecent;
-    const lastIndex=Number.isSafeInteger(appScope.state.autoLastIndex)?appScope.state.autoLastIndex:await appScope.core.historyTail();
-    check();appScope.state.autoLastIndex=lastIndex;
-    const rows=validAutomaticBatches(),controls=appScope.state.memoryControls?.operations??{};
-    const saved=rows.filter(batch=>batch.status==='saved'&&controls[savedBatchOperation(batch)]!=='deleted');
-    const coverage=summaryCoverage(saved,{startFloor:start,lastIndex,keepRecent,batchSize});
-    const advanced=advancedStartFloor(coverage,start);
-    // Only withdrawal of a published result can rewind. Retired failed attempts
-    // and deleted candidates never created coverage. A newer saved overlap still
-    // covers the floor, so deleting its older generation cannot rewind either.
-    const priorCoverage=summaryCoverage(saved,{startFloor:0,lastIndex,keepRecent,batchSize});
-    const firstDeleted=appScope.state.batches.filter(batch=>{
-      const published=savedBatchOperation(batch);
-      const invalidSource=batch.status==='saved'&&!rows.includes(batch);
-      return published&&(batch.status==='deleted'||controls[published]==='deleted'||invalidSource)&&Number.isSafeInteger(batch.startIndex)&&Number.isSafeInteger(batch.endIndex)&&batch.startIndex<start;
-    }).reduce((value,batch)=>{
-      const gap=priorCoverage.missingRanges.find(range=>range.startIndex<=Math.min(batch.endIndex,start-1)&&range.endIndex>=batch.startIndex);
-      return gap?Math.min(value,Math.max(batch.startIndex,gap.startIndex)):value;
-    },start);
-    const next=firstDeleted<start?firstDeleted:hold?start:advanced;
-    if(next===null||next===start)return null;
-    if(hold&&next<hold.endIndex+1){
-      const updatedHold={...hold,endIndex:next-1};
-      await appScope.core.updateMemoryControls({automation:{summaryHold:updatedHold}},{check,returnView:'deferred'});check();
-      appScope.state.summaryHold=updatedHold;
-    }
+    const next=summaryFrontier(validAutomaticBatches(),start);
+    if(hold?.reason==='batch_deleted'){await appScope.core.updateMemoryControls({automation:{summaryHold:null}},{check,returnView:'deferred'});check();appScope.state.summaryHold=null;}
+    if(next===start)return null;
     await appScope.workspace.write('auto-progress',{startFloor:next,updatedAt:Date.now()},{check});check();
     appScope.state.autoStartFloor=next;appScope.notify();
     appScope.runtimeLog.record({run:diagnosticRun,task:'summary',phase:'auto_start_floor',details:{startFloor:next,from:start}});
@@ -104,15 +81,16 @@ function queueAutomaticSummary(messageId){
     appScope.autoPending=true;wakeAutomaticSummary();
   }
 
-function unfinishedManualSummary(){return appScope.state.batches.some(batch=>['queued','running','failed','interrupted'].includes(batch.status)&&batch.trigger!=='auto'&&!hasNewerSavedCoverage(batch,appScope.state.batches));}
+function summaryHeld(){return appScope.state.summaryHold&&appScope.state.summaryHold.reason!=='batch_deleted';}
+function unfinishedManualSummary(){return appScope.state.batches.some(batch=>batch.replacement&&['queued','running','failed','interrupted'].includes(batch.status)&&batch.trigger!=='auto'&&!hasNewerSavedCoverage(batch,appScope.state.batches));}
 
 function wakeAutomaticSummary(){
-    if(!appScope.autoPending||appScope.autoTimer!==null||appScope.autoTask||appScope.active||appScope.opening||appScope.disposed||appScope.followPending||appScope.following||appScope.state.stale||appScope.automaticPaused||appScope.state.summaryHold||appScope.currentMemoryMutation()||unfinishedManualSummary()||!appScope.enabled||!appScope.core.settings.autoSummaryEnabled||!appScope.apiConnectionReady('summary')||appScope.host.document?.visibilityState==='hidden'||!appScope.workspace?.isCurrent())return;
+    if(!appScope.autoPending||appScope.autoTimer!==null||appScope.autoTask||appScope.active||appScope.opening||appScope.disposed||appScope.followPending||appScope.following||appScope.state.stale||appScope.automaticPaused||summaryHeld()||appScope.currentMemoryMutation()||unfinishedManualSummary()||!appScope.enabled||!appScope.core.settings.autoSummaryEnabled||!appScope.apiConnectionReady('summary')||appScope.host.document?.visibilityState==='hidden'||!appScope.workspace?.isCurrent())return;
     const token=appScope.epoch,version=appScope.cancelVersion;
     appScope.autoTimer=setTimeout(()=>{
       appScope.autoTimer=null;
       if(token!==appScope.epoch||version!==appScope.cancelVersion||appScope.disposed){appScope.autoPending=false;return;}
-      if(appScope.active||appScope.opening||appScope.followPending||appScope.following||appScope.state.stale||appScope.currentMemoryMutation()||appScope.state.summaryHold||unfinishedManualSummary())return;
+      if(appScope.active||appScope.opening||appScope.followPending||appScope.following||appScope.state.stale||appScope.currentMemoryMutation()||summaryHeld()||unfinishedManualSummary())return;
       appScope.autoPending=false;
       const owner={token,version};appScope.autoTaskOwner=owner;
       const task=(async()=>{await appScope.syncModulesQuietly();if(appScope.autoTaskOwner===owner&&token===appScope.epoch&&version===appScope.cancelVersion&&!appScope.disposed)await autoSummary({owner});})()
@@ -127,7 +105,7 @@ async function autoSummary({force=false,owner={token:appScope.epoch,version:appS
     // survives settlement until a full reread reconciles the actual controls.
     // Background wakes cannot use the stale in-memory scheduling snapshot.
     if(appScope.currentMemoryMutation()){if(!force)return;await appScope.refresh();}
-    if (appScope.active || appScope.followPending || appScope.following || appScope.state.stale || (!force&&(appScope.automaticPaused||appScope.state.summaryHold||!appScope.core.settings.autoSummaryEnabled||!appScope.apiConnectionReady('summary'))) || !appScope.workspace?.isCurrent()) return;
+    if (appScope.active || appScope.followPending || appScope.following || appScope.state.stale || (!force&&(appScope.automaticPaused||summaryHeld()||!appScope.core.settings.autoSummaryEnabled||!appScope.apiConnectionReady('summary'))) || !appScope.workspace?.isCurrent()) return;
     if(force&&appScope.state.summaryHold){await appScope.core.updateMemoryControls({automation:{summaryHold:null}});appScope.state.summaryHold=null;}
     if(unfinishedManualSummary()){if(force)appScope.summaryFeedback('warning','手动计划尚未完成；请在本页“总结批次”重试或删除所选候选后再继续自动总结。','auto');return;}
     const feedbackAtStart = appScope.feedbackSequence,op=appScope.begin();owner.controller=appScope.active;appScope.autoRunOwner=owner;appScope.autoRunning=true;
@@ -156,10 +134,9 @@ async function autoSummary({force=false,owner={token:appScope.epoch,version:appS
         appScope.summaryFeedback('warning',appScope.autoHistoryAttempts<=3?'聊天原文暂未就绪，自动总结稍后重读；已有记忆保留':'聊天原文仍不可读，等待下一次回复完成或回到前台再试；已有记忆保留','auto');
         appScope.runtimeLog.record({task:'background',phase:'waiting',details:{...errorDiagnostics(error),reason:'history_retry_wait',retryDelayMs:delay,historyReadAttempts:appScope.autoHistoryAttempts}});
       }else if(!force&&owns()&&!op.signal.aborted){
-        const delay=backgroundRetryDelay(error,++appScope.autoFailureCount);
-        appScope.autoRetryAt=delay?Date.now()+delay:0;if(delay)appScope.autoPending=true;else appScope.autoFailureCount=4;
-        appScope.summaryFeedback('warning',delay?`本批未完成：${failureText(error)} ${Math.ceil(delay/1000)} 秒后自动重试（${appScope.autoFailureCount}/3）；已保存内容不重做。`:`自动总结暂缓：${failureText(error)} 可从总结页重试；已有记忆保留。`,'auto');
-        if(delay)appScope.runtimeLog.record({task:'background',phase:'retry_wait',details:{...errorDiagnostics(error),retryDelayMs:delay}});
+        const recoverableRange=['MODEL_OUTPUT_BLOCKED','MODEL_OUTPUT_TRUNCATED','SUMMARY_RESPONSE_ERROR','SUMMARY_TOOL_RESPONSE_INVALID','VALIDATION_ERROR','PROVIDER_STREAM_ERROR','PROVIDER_REQUEST_FAILED','TIMEOUT','FLOOR_SUMMARY_MISSING','COVERAGE_INCOMPLETE'].includes(error?.code)&&![401,403].includes(error?.details?.status)&&!['invalid_api_key','insufficient_quota'].includes(error?.details?.upstreamCode);
+        if(recoverableRange){appScope.autoFailureCount=0;appScope.autoRetryAt=0;appScope.autoPending=false;appScope.summaryFeedback('warning','本次已停止；下次触发从后面的楼层继续，失败记录保留，可手动重试。','auto');}
+        else {appScope.autoPending=false;appScope.autoFailureCount=4;appScope.summaryFeedback('error',failureText(error),'auto');}
       }else if(owns()&&!op.signal.aborted&&appScope.feedbackSequence===feedbackAtStart)appScope.summaryFeedback('error',`自动总结未完成：${failureText(error)}`,'auto');
       if(force)throw error;
     }

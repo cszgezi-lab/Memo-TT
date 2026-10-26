@@ -25,11 +25,11 @@ const countProgress = (done, total) => Number.isSafeInteger(done) && done >= 0 &
 
 // Formal saved coverage is independent of the currently running task. A saved
 // manual candidate must never extend the range of the applied dossier.
-function savedProgress(rows, { startFloor, lastIndex, batchSize, keepRecent }) {
+function savedProgress(rows, { startFloor, lastIndex, batchSize, keepRecent, advanceFromLatest=false }) {
   const saved = rows.filter(row => row.status !== 'deleted' && (row.status === 'saved' || row.savedOperationId));
   let observed = validFloor(lastIndex) ? lastIndex : 0;
-  if (!validFloor(lastIndex)) for (const row of saved) if (validFloor(row.endIndex)) observed = Math.max(observed, row.endIndex);
-  return summaryProgress(rows, {
+  if (!validFloor(lastIndex)) for (const row of (advanceFromLatest?rows:saved)) if (validFloor(row.endIndex)) observed = Math.max(observed, row.endIndex);
+  return summaryProgress(rows, {advanceFromLatest,
     startFloor: validFloor(startFloor) ? startFloor : 1,
     lastIndex: observed,
     batchSize: Number.isSafeInteger(batchSize) && batchSize > 0 ? batchSize : 10,
@@ -104,7 +104,7 @@ export function paintPhoneHome(panel, s = {}) {
   const allMemoryRows = itemsOf(s.batches);
   const memoryRows = allMemoryRows.filter(row => row && row.status !== 'deleted' && (row.status === 'saved' || !hasNewerSavedCoverage(row, allMemoryRows)));
   const personaRows = itemsOf(persona.batches).filter(row => row && row.status !== 'deleted');
-  const memory = savedProgress(memoryRows, { startFloor: s.autoStartFloor, lastIndex: s.autoLastIndex, batchSize: settings.autoSummaryEvery, keepRecent: settings.autoKeepRecent });
+  const memory = savedProgress(allMemoryRows, {advanceFromLatest:true, startFloor: s.autoStartFloor, lastIndex: s.autoLastIndex, batchSize: settings.autoSummaryEvery, keepRecent: settings.autoKeepRecent });
   const formal = savedProgress(personaRows, { startFloor: persona.startFloor, lastIndex: persona.lastIndex, batchSize: settings.dynamicPersonaEvery, keepRecent: settings.dynamicPersonaKeepRecent });
   const candidate = candidateProjection(persona);
   const memoryFailures = memoryRows.filter(isFailure).length;
@@ -117,11 +117,11 @@ export function paintPhoneHome(panel, s = {}) {
   let memoryRange = range(memoryTask) || range(memoryRow);
   // Use the application's source-validated plan when available. This is a
   // projection only: the scheduler still owns readiness and all dispatch gates.
-  const nextMemory = s.automatic ?? autoSummaryPlan(memoryRows, {
+  const nextMemory = s.automatic ?? autoSummaryPlan(allMemoryRows, {advanceFromLatest:true,
     startFloor: s.autoStartFloor ?? 1, lastIndex: s.autoLastIndex ?? null,
     batchSize: settings.autoSummaryEvery ?? 20, keepRecent: settings.autoKeepRecent ?? 0,
   });
-  if(!memoryBusy&&memoryRow&&validFloor(nextMemory.nextStart)&&nextMemory.nextStart<memoryRow.startIndex)memoryRange='';
+  if(!memoryBusy&&memoryRow&&validFloor(nextMemory.nextStart)&&(nextMemory.nextStart<memoryRow.startIndex||nextMemory.nextStart>memoryRow.endIndex))memoryRange='';
   const waitingMemory = s.chatReady && !memoryBusy && !memoryRange && validFloor(nextMemory.lastIndex);
   const nextSize = nextMemory.nextEnd - nextMemory.nextStart + 1;
   const accumulated = Math.max(0, Math.min(nextSize, nextMemory.eligibleEnd - nextMemory.nextStart + 1));
@@ -138,7 +138,7 @@ export function paintPhoneHome(panel, s = {}) {
       kind: 'memory', state: memoryState, busy: memoryBusy, failures: memoryFailures, progress: memoryProgress,
       range: memoryRange || (waitingMemory ? range({ startIndex: nextMemory.nextStart, endIndex: nextMemory.nextEnd }) : '尚无当前批次'),
       phase: memoryBusy ? phaseLabels[memoryTask?.phase] ?? '正在整理' : waitingMemory ? remaining ? '还差 ' + remaining + ' 楼凑满一批' : '已凑满一批' : memoryFailures ? '可到任务中重试或处理' : '等待下一批任务',
-      coverage: coverageText(memory, '尚无已保存记忆', '已保存'),
+      coverage: coverageText(memory, '尚无已处理批次', '已处理'),
       note: memoryBusy ? '当前批次保存后，才会计入已保存范围。' : memoryFailures ? '已保存记忆保留，未完成批次单独处理。' : waitingMemory ? '下一批 ' + nextMemory.nextStart + '–' + nextMemory.nextEnd + ' 楼 · 已凑 ' + accumulated + '/' + nextSize + ' 楼 · 最近 ' + nextMemory.keepRecent + ' 楼保留原文' : '',
       automatic: automaticMemoryText(settings, monitor), progressLabel: waitingMemory ? '下一批 · 已凑 ' + accumulated + '/' + nextSize + ' 楼' : '本次生成进度',
     },
