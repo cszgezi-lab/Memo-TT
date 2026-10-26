@@ -74,7 +74,7 @@ export function createChatEventStreamParser({allowUnmarkedJson=false}={}){
     // a finish reason. Their normal source, floor and schema validators decide
     // whether it can be saved. Never close brackets or recover a partial object.
     const jsonComplete=allowUnmarkedJson&&!tool&&json&&typeof json==='object'&&!Array.isArray(json)&&Object.keys(json).length>0;
-    if(typeof finish!=='string'&&!jsonComplete)invalid('stream_incomplete',{streamChunks:chunks,responseChars:text.length+(tool?.function.arguments.length??0),finishReason:'missing'});
+    if(typeof finish!=='string'&&!jsonComplete)invalid('stream_incomplete',{streamChunks:chunks,responseChars:text.length+(tool?.function.arguments.length??0),finishReason:'missing',streamDone:done});
     if(tool&&finish!=='tool_calls'&&finish!=='length'&&finish!=='content_filter')invalid('stream_invalid',{streamChunks:chunks});
     return {object:'chat.completion',...(model?{model}:{}),choices:[{index:0,message:{role:'assistant',content:content.join(''),...(tool?{tool_calls:[tool]}:{}),...(refusal?{refusal}:{})},finish_reason:finish}],...(usage?{usage}:{}),_shiyiStream:{streaming:true,streamChunks:chunks}};
   }};

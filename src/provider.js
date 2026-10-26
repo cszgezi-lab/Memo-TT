@@ -4,6 +4,7 @@ import { diagnosticRequestId, errorDiagnostics, jsonFailure, contentType,upstrea
 import {scheduleDeadline} from './request-deadline.js';
 import {createChatEventStreamParser} from './provider-stream.js';
 import {providerQueueScope} from './provider-scheduler.js';
+import {createResponseExcerpt} from './response-excerpt.js';
 
 // Scoped to this plugin's transport function, never a global fetch hook.
 const observers=new WeakMap();
@@ -168,13 +169,14 @@ async function readErrorBody(response,onBody,signal){
   finally{closed=true;clearTimeout(timer);controller.abort();signal?.removeEventListener('abort',relay);}
 }
 
-export async function parseProviderJson(response, { requireStatus = true, onMetadata=()=>{},onBody=()=>{},allowStream=false,allowUnmarkedJson=false,signal } = {}) {
+export async function parseProviderJson(response, { requireStatus = true, onMetadata=()=>{},onBody=()=>{},onResponseText=()=>{},allowStream=false,allowUnmarkedJson=false,signal } = {}) {
   const status = Number(response?.status ?? response?.statusCode ?? 200);
   const mime=response?.headers?.get?.('content-type')??'';
   const metadata={status,statusKnown:response?.status!==undefined||response?.statusCode!==undefined,responseType:/json/i.test(mime)?'json':/html/i.test(mime)?'html':/text/i.test(mime)?'text':mime?'other':'unknown'};
   onMetadata(metadata);
   if (requireStatus && (status < 200 || status >= 300)) {
     const body = await readErrorBody(response,onBody,signal);
+    onResponseText(body);
     let errorBody;try{errorBody=JSON.parse(body);}catch{errorBody={message:body.slice(0,4096)};}
     const upstreamCode=upstreamErrorCode(errorBody),upstreamHint=upstreamErrorHint(errorBody);
     const header=response?.headers?.get?.('retry-after'),seconds=header&&Number(header);
@@ -185,6 +187,7 @@ export async function parseProviderJson(response, { requireStatus = true, onMeta
   if(allowStream){
     const parser=createChatEventStreamParser({allowUnmarkedJson}),json=[],declaredStream=/event-stream/i.test(mime),prefixes=['data:','event:','id:','retry:'];let mode=null,probe='';
     await readBody(response,onBody,signal,{collect:false,onText:chunk=>{
+      onResponseText(chunk);
       if(mode==='sse'){parser.push(chunk);return;}
       if(mode==='json'){json.push(chunk);return;}
       probe+=chunk;const start=probe.trimStart();
@@ -199,7 +202,7 @@ export async function parseProviderJson(response, { requireStatus = true, onMeta
     }});
     if(mode==='sse')return parser.finish();
     text=json.join('')+probe;
-  }else text=await readBody(response,onBody,signal);
+  }else text=await readBody(response,onBody,signal,{onText:onResponseText});
   try { return JSON.parse(text); } catch (error) {
     throw new SummaryResponseError('provider returned invalid JSON', jsonFailure(error,text,{...metadata,stage:'parse_envelope'}));
   }
@@ -238,6 +241,7 @@ export class ProviderClient {
 
   async performRequest(resource, payload, { signal, timeoutMs, headers, method, emit,allowUnmarkedJson }) {
     const receivingStarted=Date.now(),receiveMeta={};
+    const excerpt=createResponseExcerpt({secrets:[this.profile.apiKey]});
     const onBody=buffered=>{
       if(receiveMeta.firstBodyMs!==undefined)return;
       receiveMeta.firstBodyMs=Date.now()-receivingStarted;receiveMeta.bufferedBody=buffered;
@@ -277,12 +281,14 @@ export class ProviderClient {
         if(controller.signal.aborted)throw new ShiyiError('request canceled','CANCELED');
         const response=await this.fetch(url,init);
         if(controller.signal.aborted){discardResponseBody(response);throw new ShiyiError('request canceled','CANCELED');}
-        return parseProviderJson(response,{allowStream:resource==='chat'&&payload?.stream===true,allowUnmarkedJson,signal:controller.signal,onBody,onMetadata:details=>{receiveMeta.responseHeadersMs=Date.now()-receivingStarted;emit('response',{...details,...receiveMeta,stage:'read_body'});}});
+        return parseProviderJson(response,{allowStream:resource==='chat'&&payload?.stream===true,allowUnmarkedJson,onResponseText:text=>excerpt.push(text),signal:controller.signal,onBody,onMetadata:details=>{receiveMeta.responseHeadersMs=Date.now()-receivingStarted;emit('response',{...details,...receiveMeta,stage:'read_body'});}});
       })(), canceled]);
       const message=result?.choices?.[0]?.message;
       emit('complete',{stage:'parse_envelope',...receiveMeta,...result?._shiyiStream,contentType:contentType(message?.content??result),responseChars:typeof message?.content==='string'?message.content.length:undefined,choicesCount:Array.isArray(result?.choices)?result.choices.length:undefined,toolCallsCount:message?.tool_calls?.length,finishReason:result?.choices?.[0]?.finish_reason,promptTokens:result?.usage?.prompt_tokens,completionTokens:result?.usage?.completion_tokens,totalTokens:result?.usage?.total_tokens},'success');
       return result;
     } catch (error) {
+      const sample=excerpt.snapshot(error?.details);
+      if(sample.totalChars&&(timedOut||error?.code!=='CANCELED'&&error?.name!=='AbortError'))emit('response_excerpt',{responseExcerpt:sample},'warning');
       if(['PROVIDER_HTTP_ERROR','PROVIDER_STREAM_ERROR'].includes(error?.code))controller.abort();
       if(error&&typeof error==='object')error.details={...receiveMeta,...error.details};
       if (timedOut) {

@@ -137,7 +137,9 @@ function detailsHTML(entry){
     for(const issue of issues)lines.push(['校验字段',validationIssueText(issue)]);
   }
   if(d.code)lines.push(['错误',failureText({code:d.code,details:d})]);
-  return `<p class="memo-log-summary">${esc(runtimeLogSummary(entry))}</p><section class="memo-log-technical">${lines.map(([label,value])=>`<div class="memo-log-detail${['错误','校验问题','校验字段'].includes(label)?' memo-log-wide':''}"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join('')}</section>`;
+  const excerpt=d.responseExcerpt;
+  const raw=excerpt?`<p>失败响应：共 ${excerpt.totalChars} 字符${excerpt.truncated?' · 已截取首尾':''} · ${esc(excerpt.finishReason)}</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:24rem;overflow:auto">${esc(excerpt.prefix)}${excerpt.suffix?'\n〔中间响应未保留〕\n'+esc(excerpt.suffix):''}</pre>`:'';
+  return `${raw}<p class="memo-log-summary">${esc(runtimeLogSummary(entry))}</p><section class="memo-log-technical">${lines.map(([label,value])=>`<div class="memo-log-detail${['错误','校验问题','校验字段'].includes(label)?' memo-log-wide':''}"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join('')}</section>`;
 }
 export function mountRuntimeLog({panel,app,run,host,download}){
   const $=s=>panel.querySelector?.(s);let page=1,pageSize=10,state=null,signature='';const opened=new Set();
