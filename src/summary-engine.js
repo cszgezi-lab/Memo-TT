@@ -27,6 +27,7 @@ import { planSummaryRequests } from './summary-planner.js';
 import { moduleSummaryContract, moduleSummaryInstructions, expandModuleSummary, expandCompactSummary, normalizedModuleSourceRefs, moduleLinkNormalization, unwrapModuleSummaryResponse } from './summary-wire.js';
 import { applySummaryPreset, summaryPresetFromRules, PRESET_TRANSPORT_GUARD } from './summary-presets.js';
 import {parseSummaryJson} from './summary-json.js';
+import {recoverModuleJsonRows} from './summary-json-recovery.js';
 import {discardInvalidDetailRows,withSummaryRowIsolation} from './summary-row-isolation.js';
 import {summaryKnowledgeSources,SUMMARY_KNOWLEDGE_EVIDENCE_RULE} from './summary-knowledge-evidence.js';
 import {NARRATIVE_READING_RULE,narrativeCounters,assertNarrativeReadingContent,isNarrativeRegexConfig} from './narrative-reading.js';
@@ -74,8 +75,8 @@ function manualToolRetryRequired(){
   error.code='SUMMARY_TOOL_RESPONSE_INVALID';return error;
 }
 
-async function parseModelResponse(raw, { onMetadata = () => {}, onNormalize = () => {}, allowArray = false, allowToolTransport = false } = {}) {
-  const parseJson=text=>{const parsed=parseSummaryJson(text);if(parsed.duplicateEmptyModules){try{onNormalize({duplicateEmptyModules:parsed.duplicateEmptyModules});}catch{/* diagnostics do not decide validity */}}return parsed.value;};
+async function parseModelResponse(raw, { onMetadata = () => {}, onNormalize = () => {}, allowArray = false, allowToolTransport = false, allowRowRecovery = false } = {}) {
+  const parseJson=text=>{let parsed;try{parsed=parseSummaryJson(text);}catch(error){const recovered=allowRowRecovery?recoverModuleJsonRows(text):null;if(!recovered)throw error;parsed=recovered;try{onNormalize(recovered);}catch{/* diagnostics do not decide validity */}}if(parsed.duplicateEmptyModules){try{onNormalize({duplicateEmptyModules:parsed.duplicateEmptyModules});}catch{/* diagnostics do not decide validity */}}return parsed.value;};
   const status = responseStatus(raw);
   if (status < 200 || status >= 300) {
     const body = await readRawBody(raw).catch(() => '');
@@ -898,6 +899,13 @@ export class SummaryEngine {
           }
           phase=previousPhase;
         };
+        // An upgraded row decoder may admit an old syntax-failed reply.
+        // Reuse only a proven complete module with isolated bad elements;
+        // explicit invalid-tool retry and unparseable/truncated replies stay failed.
+        if(prior?.raw!==undefined&&prior.retryModel&&!prior.manualRetryRequired&&!this.verified&&!this.staged){
+          let recoveredRows=0;
+          try{await parseModelResponse(prior.raw,{allowRowRecovery:true,allowToolTransport:this.summaryArmor.antiTruncation,onNormalize:details=>{recoveredRows+=details.skippedRecords??0;}});if(recoveredRows)prior.retryModel=false;}catch{/* normal explicit retry remains available */}
+        }
         let raw,cachedForeignSource=false,cachedInvalidTool=null;
         if(prior?.raw!==undefined&&!prior.retryModel&&!this.verified&&!this.staged){
           // Explicit resume must not replay an irreparably foreign source
@@ -950,29 +958,8 @@ export class SummaryEngine {
         }
         throwIfAborted(signal);
         phase='response';
-        const parseResponse=answer=>parseEvidence(answer,{allowToolTransport:this.summaryArmor.antiTruncation,onMetadata:metadata=>emit('response',{...baseDetails,...metadata,elapsedMs:this.now()-started}),onNormalize:details=>emit('normalize',{...baseDetails,...details},details.duplicateEmptyModules?'warning':'success')});
-        let parsed;
-        try{parsed=await parseResponse(raw);}
-        catch(error){
-          if(!this.recoveryEnabled||this.staged||this.verified||recoveryCalls>=2||signal?.aborted||error?.code!=='SUMMARY_RESPONSE_ERROR'||error.details?.stage!=='parse_content'||!['stop','end_turn'].includes(error.details?.finishReason)||!['invalid_model_json','invalid_model_root','empty_model_content'].includes(error.details?.reason))throw error;
-          throwIfAborted(signal);
-          // A known-invalid response must not become the paid cache fallback
-          // if this one new request fails before it can return a replacement.
-          const patch={retryModel:true};this.repository.retainPrivateResponse?.(child.scope,child.operationId,patch);
-          await this.repository.savePrivateTask?.(child.scope,child.operationId,patch).catch(e=>emit('checkpoint_warning',{...baseDetails,...errorDiagnostics(e),storageArtifact:'response-cache'},'warning'));
-          const retryRequest=Object.defineProperties({},Object.getOwnPropertyDescriptors(request));
-          defineModelAlias(retryRequest,'formatRecovery',true);retryRequest.instructions+='\n\n'+FORMAT_RECOVERY_RULE;
-          emit('partial_repair',{...baseDetails,...errorDiagnostics(error),purpose:'summary'},'warning');
-          try{
-            phase='request';raw=await invoke(retryRequest,baseDetails,{extra:true,allowTransientRetry:false});throwIfAborted(signal);
-            if(typeof raw?.text==='function'||raw?.body!==undefined)raw={status:responseStatus(raw),body:await readRawBody(raw)};
-            await keepResponse(raw);throwIfAborted(signal);phase='response';parsed=await parseResponse(raw);
-            emit('repair_complete',{...baseDetails,purpose:'summary'},'success');
-          }catch(repairError){
-            if(!signal?.aborted&&!['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(repairError?.code)&&repairError?.name!=='AbortError')repairError.details={...repairError.details,repairAttempted:true};
-            throw repairError;
-          }
-        }
+        const parseResponse=answer=>parseEvidence(answer,{allowRowRecovery:true,allowToolTransport:this.summaryArmor.antiTruncation,onMetadata:metadata=>emit('response',{...baseDetails,...metadata,elapsedMs:this.now()-started}),onNormalize:details=>details.skippedRecords?reportSkipped(details):emit('normalize',{...baseDetails,...details},details.duplicateEmptyModules?'warning':'success')});
+        let parsed=await parseResponse(raw);
         if(prior?.manualRetryRequired||cachedInvalidTool){
           const patch={manualRetryRequired:false};this.repository.retainPrivateResponse?.(child.scope,child.operationId,patch);
           await this.repository.savePrivateTask?.(child.scope,child.operationId,patch).catch(error=>emit('checkpoint_warning',{...baseDetails,...errorDiagnostics(error),storageArtifact:'response-cache'},'warning'));

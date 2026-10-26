@@ -1,3 +1,5 @@
+import {clone} from '../utils.js';
+import {createSummaryApiPresets,summaryApiPresetSettings} from '../product-api-presets.js';
 import { credentialOrigin } from '../product-credentials.js';
 import { createWorkspace } from '../product-workspace.js';
 import { ProviderClient } from '../provider.js';
@@ -8,6 +10,7 @@ import { chatConnectionPayload, inspectChatConnection } from '../product-connect
 
 /** settings orchestration. Dependencies are limited by service-contracts.js. */
 export function createSettingsService(appScope) {
+const summaryPresets=createSummaryApiPresets({getStore:()=>appScope.globalStore()});
 function effectiveKeys(patch={}){const s={...appScope.core.settings,...patch};return Object.fromEntries(Object.entries(appScope.keys).map(([k,v])=>[k,appScope.keyOrigins[k]&&appScope.keyOrigins[k]!==credentialOrigin(s[`${appScope.prefixFor(k)}Endpoint`])?'':v]));}
 
 async function loadApiSettings(){
@@ -74,18 +77,30 @@ async function saveSettings(patch) {
     appScope.setMessage(readingMessage??'全局设置已保存，所有聊天共用');return {status:'saved',settings:appScope.core.settings};
   }
 
-async function saveApi(kind,patch,{keyValue}={}){
+async function saveApi(kind,patch,{keyValue,replaceKey=false}={}){
     if(!Object.hasOwn(appScope.keys,kind))throw new Error('未知模型用途');
     const keyVersion=appScope.keyVersions[kind]??0;
     await loadApiSettings();
     const valid=validateProductPatch(patch),settings={...appScope.core.settings,...valid};
     if(Object.keys(valid).some(k=>!k.startsWith(appScope.prefixFor(kind))&&!(kind==='assistant'&&k==='assistantFollowSummary')))throw new Error('此按钮只保存当前模型连接');
-    let value=keyValue!==undefined&&String(keyValue)!==''?String(keyValue):effectiveKeys(valid)[kind];
-    if(!value&&appScope.state.credentialSaved[kind]){const saved=await appScope.credentials.read(kind);if(saved.origin===credentialOrigin(settings[`${appScope.prefixFor(kind)}Endpoint`]))value=saved.value;}
+    let value=replaceKey?String(keyValue??''):keyValue!==undefined&&String(keyValue)!==''?String(keyValue):effectiveKeys(valid)[kind];
+    if(!value&&!replaceKey&&appScope.state.credentialSaved[kind]){const saved=await appScope.credentials.read(kind);if(saved.origin===credentialOrigin(settings[`${appScope.prefixFor(kind)}Endpoint`]))value=saved.value;}
     await saveSettings(valid);
-    if(value){const stored=await appScope.credentials.save(kind,value,credentialOrigin(settings[`${appScope.prefixFor(kind)}Endpoint`]));if((appScope.keyVersions[kind]??0)===keyVersion){appScope.keys[kind]=stored.value;appScope.keyOrigins[kind]=stored.origin;appScope.keyEdited.delete(kind);}appScope.state.credentialSaved[kind]=true;delete appScope.state.credentialErrors[kind];}
+    if(value||replaceKey){const stored=await appScope.credentials.save(kind,value,credentialOrigin(settings[`${appScope.prefixFor(kind)}Endpoint`]));if((appScope.keyVersions[kind]??0)===keyVersion){appScope.keys[kind]=stored.value;appScope.keyOrigins[kind]=stored.origin;appScope.keyEdited.delete(kind);}appScope.state.credentialSaved[kind]=Boolean(value);delete appScope.state.credentialErrors[kind];}
     appScope.core.setSessionCredential(effectiveKeys().summary);appScope.setMessage(value?'API 与 Key 已保存，重启后自动恢复':'API 已保存；当前地址未保存 Key');return {status:'saved'};
   }
+
+async function listSummaryApiPresets(){await loadApiSettings();return summaryPresets.list();}
+async function saveSummaryApiPreset(name,patch,{keyValue}={}){
+ await loadApiSettings();const valid=validateProductPatch(patch),settings=summaryApiPresetSettings({...appScope.core.settings,...valid});
+ if(Object.keys(valid).some(k=>!Object.hasOwn(settings,k)))throw new Error('连接预设只能保存总结 API 参数');
+ const key=keyValue!==undefined?String(keyValue):effectiveKeys(valid).summary;
+ const result=await summaryPresets.save(name,settings,key);appScope.setMessage('总结 API 连接预设已保存');return result;
+}
+async function loadSummaryApiPreset(id){
+ await loadApiSettings();const preset=await summaryPresets.get(id),connection=Object.fromEntries(Object.entries(preset.settings).filter(([k])=>k.startsWith('provider'))),other=Object.fromEntries(Object.entries(preset.settings).filter(([k])=>!k.startsWith('provider')));
+ await saveApi('summary',connection,{keyValue:preset.key,replaceKey:true});await saveSettings(other);appScope.setMessage('已切换总结 API 连接预设：'+preset.name);return {status:'saved',settings:clone(preset.settings),message:'已读取连接预设：'+preset.name,level:'success'};
+}
 
 async function forgetKey(kind){
     await loadApiSettings();await appScope.credentials.save(kind,'','');appScope.keys[kind]='';appScope.keyOrigins[kind]='';appScope.keyEdited.add(kind);appScope.state.credentialSaved[kind]=false;delete appScope.state.credentialErrors[kind];appScope.core.setSessionCredential(effectiveKeys().summary);appScope.recallChanged({vectors:true});appScope.setMessage('此模型保存的 Key 已清除，设置与记忆保留');
@@ -115,5 +130,5 @@ async function testConnection(kind = 'summary', patch = {}) {
       op.check(); appScope.setMessage(report.message); return { ...report,kind };
     } finally { op.finish(); }
   }
-  return Object.freeze({ effectiveKeys, loadApiSettings, client, apiConnectionReady, resolvedPersonaSettings, saveUi, saveSettings, saveApi, forgetKey, listModels, testConnection });
+  return Object.freeze({ effectiveKeys, loadApiSettings, client, apiConnectionReady, resolvedPersonaSettings, saveUi, saveSettings, saveApi, listSummaryApiPresets, saveSummaryApiPreset, loadSummaryApiPreset, forgetKey, listModels, testConnection });
 }

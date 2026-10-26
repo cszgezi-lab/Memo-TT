@@ -20,6 +20,8 @@ import { failureText } from '../src/product-feedback.js';
 import { DIAGNOSTIC_ACTIONS } from '../src/diagnostics.js';
 import { summarySelection } from '../src/product-batches.js';
 import { runtimeLogHTML, mountRuntimeLog } from './product-runtime-log.js';
+import {mountSummaryApiPresets} from './product-api-presets.js';
+import {SUMMARY_API_PRESET_KEYS} from '../src/product-api-presets.js';
 import { summaryPresetsHTML, mountSummaryPresets } from './product-summary-presets.js';
 
 import { recallSectionsHTML, mountRecallView, RECALL_PAGES } from './product-recall-view.js';
@@ -840,6 +842,7 @@ for(const [selector,delta]of [['[data-memory-prev]',-1],['[data-memory-next]',1]
 $('[data-memory-page]')?.addEventListener('change',()=>{memoryCurrentPage=Math.max(1,Math.floor(Number($('[data-memory-page]').value)||1));painting.flush();});
  let timer;$('[data-input]')?.addEventListener?.('input',()=>{clearTimeout(timer);const value=$('[data-input]').value,context=app.draftContext;timer=setTimeout(()=>run(()=>app.setDraft(value,context)),350);});
  // Populate the real form at mount, before any explicit chat binding or request.
+ mountSummaryApiPresets({panel,app,run,readPatch:()=>{const fields=collect(panel);return Object.fromEntries(SUMMARY_API_PRESET_KEYS.filter(k=>Object.hasOwn(fields,k)).map(k=>[k,fields[k]]));},onLoaded:()=>{for(const k of SUMMARY_API_PRESET_KEYS)dirtyApi.delete(k);$('[data-key="summary"]').value='';for(const kind of ['summary','assistant','supplement','knowledge'])resetModels(kind);fill({apiOnly:true});}});
  presetView=mountSummaryPresets({panel,app,run,host:uiHost,download});mergeView=mountMergeManagement({panel,app,run,host:uiHost});recallView=mountRecallView({panel,app,run,setPage,host:uiHost,download});logView=mountRuntimeLog({panel,app,run,host:uiHost,download});management=mountMemoryManagement({panel,app,run,host:uiHost});
  // Dictionary now belongs to memory reading. Legacy route callers still use
  // setPage('dictionary'), while ordinary recall/summary navigation stays small.
