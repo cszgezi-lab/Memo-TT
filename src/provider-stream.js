@@ -3,6 +3,9 @@ import {nativeStreamErrorCode} from './diagnostics.js';
 import {providerEnvelopeFailure} from './product-feedback.js';
 
 const invalid=(reason='stream_invalid',details={})=>{throw new SummaryResponseError('chat stream was not complete or valid',{reason,stage:'read_body',...details});};
+// Relays may append an empty legacy placeholder alongside modern tool_calls.
+// Accept only empty known fields; never consume an actual legacy tool call.
+const emptyLegacyCall=value=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.entries(value).every(([key,part])=>(key==='name'||key==='arguments')&&part==='');
 // One decoder for byte streams and native buffered SSE. No partial answer is
 // exposed to the business layer; errors can terminate an open connection early.
 export function createChatEventStreamParser({allowUnmarkedJson=false}={}){
@@ -30,7 +33,7 @@ export function createChatEventStreamParser({allowUnmarkedJson=false}={}){
     const choice=value.choices[0];if(!choice)return;
     if(choice.index!==undefined&&choice.index!==0)invalid('stream_invalid',{streamChunks:chunks});
     const delta=choice.delta;
-    if(!delta||typeof delta!=='object'||Array.isArray(delta)||delta.function_call)invalid('stream_invalid',{streamChunks:chunks});
+    if(!delta||typeof delta!=='object'||Array.isArray(delta)||delta.function_call!==undefined&&!emptyLegacyCall(delta.function_call))invalid('stream_invalid',{streamChunks:chunks});
     if(delta.content!==undefined&&delta.content!==null){
       if(typeof delta.content!=='string'||finish&&delta.content)invalid('stream_invalid',{streamChunks:chunks});
       content.push(delta.content);
