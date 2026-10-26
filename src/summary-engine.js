@@ -28,7 +28,7 @@ import { moduleSummaryContract, moduleSummaryInstructions, expandModuleSummary, 
 import { applySummaryPreset, summaryPresetFromRules, PRESET_TRANSPORT_GUARD } from './summary-presets.js';
 import {parseSummaryJson} from './summary-json.js';
 import {recoverModuleJsonRows} from './summary-json-recovery.js';
-import {discardInvalidDetailRows,withSummaryRowIsolation} from './summary-row-isolation.js';
+import {discardInvalidDetailRows,discardInvalidFloorEventLinks,withSummaryRowIsolation} from './summary-row-isolation.js';
 import {summaryKnowledgeSources,SUMMARY_KNOWLEDGE_EVIDENCE_RULE} from './summary-knowledge-evidence.js';
 import {NARRATIVE_READING_RULE,narrativeCounters,assertNarrativeReadingContent,isNarrativeRegexConfig} from './narrative-reading.js';
 
@@ -882,7 +882,7 @@ export class SummaryEngine {
         if(prior?.binding&&prior.binding!==resultBinding)throw new ScopeConflictError('saved response source or rules changed');
         if(prior?.manualRetryRequired&&prior.retryModel&&!allowInvalidToolRetry)throw manualToolRetryRequired();
         let skippedDetailRows=false;
-        const reportSkipped=details=>{skippedDetailRows=true;emit('records_skipped',{...baseDetails,skippedRecords:details.skippedRecords,validationIssueCount:details.validationIssues.length,validationIssues:details.validationIssues},'warning');};
+        const reportSkipped=details=>{skippedDetailRows=true;emit('records_skipped',{...baseDetails,skippedRecords:details.skippedRecords??0,skippedLinks:details.skippedLinks??0,validationIssueCount:details.validationIssues.length,validationIssues:details.validationIssues},'warning');};
         const keepResponse=async raw=>{
           throwIfAborted(signal);
           if(skippedDetailRows||!this.recoveryEnabled||!this.repository.savePrivateTask)return;
@@ -895,7 +895,7 @@ export class SummaryEngine {
           // solely because this optional cache could not be acknowledged.
           try {
             await this.repository.savePrivateTask(child.scope,child.operationId,patch);
-            emit('response_saved',baseDetails,'success');
+            emit('response_saved',baseDetails,'info');
           } catch (error) {
             emit('checkpoint_warning',{...baseDetails,...errorDiagnostics(error),storageArtifact:'response-cache'},'warning');
           }
@@ -1149,8 +1149,13 @@ export class SummaryEngine {
         await tryQuarantineEnums();
         while(!validation.valid){
           const isolated=discardInvalidDetailRows(bundle,validation);
-          if(!isolated.skippedRecords)break;
-          bundle=isolated.output;reportSkipped(isolated);
+          if(isolated.skippedRecords){
+            bundle=isolated.output;reportSkipped(isolated);
+          }else{
+            const links=discardInvalidFloorEventLinks(bundle,validation,validationOptions);
+            if(!links.skippedLinks)break;
+            bundle=links.output;reportSkipped(links);
+          }
           validation=validateDraftBundle(bundle,validationOptions);
         }
         if(!validation.valid&&this.recoveryEnabled&&!this.verified){

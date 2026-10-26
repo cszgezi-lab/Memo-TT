@@ -121,7 +121,7 @@ function detailsHTML(entry){
   if(d.normalizedFields!==undefined)lines.push(['本地兼容字段',d.normalizedFields]);
   if(d.defaultedValidityFields)lines.push(['未注明有效期的人设变化',`${d.defaultedValidityFields} 条；保留为期限未确认，不推定永久变化`]);
   if(d.repairFields!==undefined)lines.push([d.purpose==='enum_repair'?'自动纠错字段':'待补全或纠错项',d.repairFields]);
-  for(const [key,label]of [['skippedRecords','跳过未保存的明细'],['deferredRecords','单独保留待核对记录'],['deferredCommitments','其中约定状态待核对'],['deferredKnowledge','其中获知依据待核对'],['journalCount','角色心迹'],['stageObservations','其中第三人称阶段观察'],['rejectedDialogues','未通过原话校验的台词']])if(d[key]!==undefined)lines.push([label,d[key]]);
+  for(const [key,label]of [['skippedLinks','忽略无效关联（正文保留）'],['skippedRecords','跳过未保存的明细'],['deferredRecords','单独保留待核对记录'],['deferredCommitments','其中约定状态待核对'],['deferredKnowledge','其中获知依据待核对'],['journalCount','角色心迹'],['stageObservations','其中第三人称阶段观察'],['rejectedDialogues','未通过原话校验的台词']])if(d[key]!==undefined)lines.push([label,d[key]]);
   const rejection={response_shape:'纠错结果结构或条数不符',unexpected_path:'字段路径不符或重复',model_unresolved:'模型明确表示无法确定',unexpected_fields:'返回了未授权字段',invalid_value:'纠正值仍不在允许范围',missing_evidence:'没有提供原文来源',invalid_evidence_shape:'来源格式不正确',evidence_mismatch:'来源不属于原记录'}[d.repairRejection];
   if(rejection)lines.push(['纠错拒绝原因',rejection]);
   if(d.recoveryCalls!==undefined)lines.push(['当前片段额外恢复调用',`${d.recoveryCalls} / 2`]);

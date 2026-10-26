@@ -75,7 +75,7 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
     batchSize??=appScope.core.settings.summaryBatchSize;
     const op=appScope.begin();op.monitor={trigger:trigger==='auto'?'auto':'manual',phase:'preparing',completedBatches:0,totalBatches:0,requestNumber:0,...(Number.isSafeInteger(startIndex)?{startIndex}:{}),...(Number.isSafeInteger(endIndex)?{endIndex}:{})};appScope.activeSummaryOperation=op;
     if(trigger==='auto'&&appScope.autoRunOwner)appScope.autoRunOwner.controller=appScope.active;
-    let saved=0,currentBatch=null,remainingPlanned=0,bookkeepingWarning=false,deferredRecords=0,skippedRecords=0,automaticQualityIds=[],usedVerification=appScope.core.settings.summaryReviewEnabled,stagedOnly=false;
+    let saved=0,currentBatch=null,remainingPlanned=0,bookkeepingWarning=false,deferredRecords=0,skippedRecords=0,skippedLinks=0,automaticQualityIds=[],usedVerification=appScope.core.settings.summaryReviewEnabled,stagedOnly=false;
     appScope.summaryFeedback('running','正在读取总结范围…',trigger);
     try{
       // Read current source again only inside the same bound chat.
@@ -166,7 +166,7 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
             const action=event.details.purpose==='summary_verification'?'正在对照原文补漏纠错':repairing?(event.details.purpose==='enum_repair'?'正在自动纠正字段':'正在补全缺失内容'):'正在总结';
             appScope.summaryFeedback('running',`${action} · 第 ${i+1}/${planned.length} 批 · #${event.details.startIndex}–${event.details.endIndex} · 本批第 ${event.details.requestNumber} 次请求${event.details.recoveryCalls?'（恢复重试）':''}${repairing?'，无需重做整批总结':''}`,trigger);
           }
-          if(event.phase==='records_skipped'){skippedRecords+=event.details.skippedRecords??0;appScope.summaryFeedback('warning',`已跳过 ${skippedRecords} 条格式或来源不正确的明细，正在保存其余有效内容；详情见运行日志。`,trigger);}
+          if(event.phase==='records_skipped'){skippedRecords+=event.details.skippedRecords??0;skippedLinks+=event.details.skippedLinks??0;appScope.summaryFeedback('warning',`${skippedRecords?`已跳过 ${skippedRecords} 条无效明细。`:''}${skippedLinks?`已忽略 ${skippedLinks} 处无效事件关联，正文保留。`:''}正在继续校验，尚未确认保存；详情见运行日志。`,trigger);}
           if(event.phase==='records_deferred'){deferredRecords+=event.details.deferredRecords??0;appScope.summaryFeedback('warning','个别记忆待核对，暂不注入；其余内容正常保存，稍后可在内容校对中单独处理。',trigger);}
           if(event.phase==='repair_request')appScope.summaryFeedback('running',`正在自动纠正 ${event.details.repairFields} 个字段 · #${item.startIndex}–${item.endIndex}，无需重做整批总结`,trigger);
           if(event.phase==='repair_complete')appScope.summaryFeedback('running',`字段纠错通过，正在保存 #${item.startIndex}–${item.endIndex}`,trigger);
@@ -206,8 +206,8 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
       if(stagedOnly){appScope.summaryFeedback('info','覆盖候选已保存，旧记忆仍在使用；请继续未完成批次，整组成功后替换。',trigger);return {status:'staged',batches:saved};}
       // Event decisions were finalized by the committed memory refresh.
       if(automaticQualityIds.length)appScope.queueAutomaticQuality(automaticQualityIds);
-      if(op.token===appScope.epoch)appScope.summaryFeedback(bookkeepingWarning||deferredRecords||skippedRecords?'warning':'success',`总结成功并已保存：#${ranges[0].startIndex}–${ranges.at(-1).endIndex}，共 ${saved} 批。${skippedRecords?`已跳过 ${skippedRecords} 条无效明细，未写入正式记忆；详情见运行日志。`:''}${deferredRecords?`${deferredRecords} 条记忆待核对，暂不注入；可在记忆 → 内容校对中单独修正。`:''}${bookkeepingWarning?'批次进度资料待恢复，记忆正文已确认保存，无需重新生成。':''}`,trigger);
-      return {status:'saved',batches:saved,level:bookkeepingWarning||deferredRecords||skippedRecords?'warning':'success',timings:{prepareMs:(firstRequestAt??Date.now())-taskStarted,modelMs,publishMs}};
+      if(op.token===appScope.epoch)appScope.summaryFeedback(bookkeepingWarning||deferredRecords||skippedRecords||skippedLinks?'warning':'success',`总结成功并已保存：#${ranges[0].startIndex}–${ranges.at(-1).endIndex}，共 ${saved} 批。${skippedRecords?`已跳过 ${skippedRecords} 条无效明细，未写入正式记忆；详情见运行日志。`:''}${skippedLinks?`已忽略 ${skippedLinks} 处无效事件关联，摘要正文已保留。`:''}${deferredRecords?`${deferredRecords} 条记忆待核对，暂不注入；可在记忆 → 内容校对中单独修正。`:''}${bookkeepingWarning?'批次进度资料待恢复，记忆正文已确认保存，无需重新生成。':''}`,trigger);
+      return {status:'saved',batches:saved,level:bookkeepingWarning||deferredRecords||skippedRecords||skippedLinks?'warning':'success',timings:{prepareMs:(firstRequestAt??Date.now())-taskStarted,modelMs,publishMs}};
     }catch(error){
       // Report the API failure before potentially slow native bookkeeping.
       // The final log also carries the durable logical-batch count, not just
@@ -227,7 +227,7 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
         if(!['request','read_body','parse_envelope','parse_content'].includes(error.details?.stage))await appScope.refresh().catch(()=>{});
       }
       appScope.runtimeLog.record({run:diagnosticRun,task:'summary',phase:'queue_remaining',details:{savedBatches:saved,pendingBatches:remainingPlanned}});
-      if(op.token===appScope.epoch&&appScope.activeSummaryOperation===op)appScope.summaryFeedback(op.signal.aborted?'info':'error',`${op.signal.aborted?'总结已停止':'总结未完成'}；已保存 ${saved} 批${remainingPlanned?`，另有 ${remainingPlanned} 批排队保留` :''}。${failureText(error)}`,trigger);
+      if(op.token===appScope.epoch&&appScope.activeSummaryOperation===op)appScope.summaryFeedback(op.signal.aborted?'info':'error',`${op.signal.aborted?'总结已停止':'总结未完成'}；已保存 ${saved} 批${remainingPlanned?`，另有 ${remainingPlanned} 批尚未开始` :''}。${failureText(error)}`,trigger);
       throw error;
     }finally{if(appScope.activeSummaryOperation===op){appScope.activeSummaryOperation=null;appScope.activeSummaryBatchId=null;}op.finish();}
   }

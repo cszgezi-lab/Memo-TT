@@ -40,3 +40,25 @@ export function withSummaryRowIsolation(input,transform,onSkipped=()=>{}){
   }
  }
 }
+
+// Floor event locators are optional metadata. Prune only a field explicitly
+// diagnosed as unknown_event, using the validator's same local/known ID sets.
+// Text, source evidence, coverage and required detail dependencies stay intact.
+export function discardInvalidFloorEventLinks(input,validation,{knownRecordIds=new Set()}={}){
+ const valid=new Set([...knownRecordIds,...(Array.isArray(input.events)?input.events:[]).map(e=>e.id)]),issues=[];
+ let output=input,skippedLinks=0;
+ for(const issue of validation?.validationIssues??[]){
+  const match=/^summaryView\[(\d+)\]\.(eventRef|eventRefs|eventId|eventIds|sourceEventId)$/.exec(issue.path??'');
+  if(issue.reason!=='unknown_event'||!match)continue;
+  const index=Number(match[1]),key=match[2],row=output.summaryView?.[index];
+  if(!row||!Object.hasOwn(row,key))continue;
+  const value=row[key],array=key==='eventRefs'||key==='eventIds';
+  if(array&&!Array.isArray(value))continue;
+  const kept=array?value.filter(id=>valid.has(id)):undefined,removed=array?value.length-kept.length:valid.has(value)?0:1;
+  if(!removed)continue;
+  if(output===input)output=clone(input);
+  if(array)output.summaryView[index][key]=kept;else delete output.summaryView[index][key];
+  skippedLinks+=removed;issues.push(issue);
+ }
+ return {output,skippedLinks,validationIssues:issues};
+}
