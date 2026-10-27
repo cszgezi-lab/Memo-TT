@@ -9,6 +9,15 @@ const itemsOf = value => Array.isArray(value) ? value : [];
 const isFailure = row => ['failed', 'interrupted'].includes(row?.status);
 const isPending = row => ['queued', 'pending', 'running', 'staged'].includes(row?.status);
 const unfinished = plan => ['running', 'paused', 'failed'].includes(plan?.status);
+// Navigation reads durable rows only; it never creates or retries work.
+export function homeBatchTarget(s, kind = 'memory') {
+  const persona = s.dynamicPersona ?? {}, all = itemsOf(s.batches);
+  const rows = kind === 'persona'
+    ? [...(unfinished(persona.manualPlan) ? itemsOf(persona.manualPlan.items).map(row => ({ ...row, candidate: true })) : []), ...itemsOf(persona.batches)]
+    : all.filter(row => row && (row.status === 'saved' || !hasNewerSavedCoverage(row, all)));
+  const active = rows.filter(row => row && row.status !== 'deleted').sort((a,b) => (b.endIndex ?? -1) - (a.endIndex ?? -1));
+  return active.find(row => row.status === 'running') ?? active.find(isFailure) ?? active.find(isPending) ?? active[0] ?? null;
+}
 const phaseLabels = {
   preparing: '正在准备', queued: '正在等待接口', waiting: '等待模型答复',
   composing: '正在生成总结', validating: '正在检查与整理', saving: '正在保存', running: '正在进行',
@@ -72,7 +81,7 @@ function automaticMemoryText(settings, monitor) {
 }
 function channelHTML(kind, title) {
   return '<article class="memo-home-channel" data-home-workflow="' + kind + '" data-hybrid-workflow="' + kind + '">' +
-    '<div class="memo-home-channel-heading"><h3>'+title+'</h3><button type="button" class="memo-home-sync" data-home-sync="'+kind+'">同步</button><button type="button" data-home-enable="'+kind+'" aria-pressed="false" class="memo-home-enable">启动</button></div><span class="memo-home-state" data-home-state="'+kind+'">尚未读取</span>' +
+    '<div class="memo-home-channel-heading"><h3>'+title+'</h3><button type="button" class="memo-home-sync" data-home-sync="'+kind+'">同步</button><button type="button" data-home-enable="'+kind+'" aria-pressed="false" class="memo-home-enable">启动</button></div><button type="button" class="memo-home-state" data-home-state="'+kind+'" title="查看批次详情">尚未读取</button>' +
     '<div class="memo-home-channel-numbers"><strong data-home-range="' + kind + '">尚无当前批次</strong><span class="memo-home-percent" data-home-percent="' + kind + '">—</span></div>' +
     '<div class="memo-home-progress" data-home-progress="' + kind + '" role="progressbar" aria-label="' + title + '当前任务进度" aria-valuetext="尚无当前任务"><span class="memo-home-progress-fill"></span></div>' +
     '<div class="memo-home-channel-phase"><span data-home-progress-label="' + kind + '">本次生成进度</span><span data-home-phase="' + kind + '">尚未开始</span></div>' +
@@ -155,6 +164,8 @@ export function paintPhoneHome(panel, s = {}) {
   for (const item of workflows) {
     const kind = item.kind;
     for (const [field, value] of Object.entries({ state: item.state, range: item.range, phase: item.phase, coverage: item.coverage, note: item.note, auto: item.automatic, 'progress-label': item.progressLabel })) write('[data-home-' + field + '="' + kind + '"]', value);
+    const stateButton = find('[data-home-state="' + kind + '"]');
+    if (stateButton) { stateButton.disabled = !s.chatReady; stateButton.setAttribute('aria-label', item.state + '，查看' + (kind === 'persona' ? '人设' : '记忆') + '批次详情'); }
     write('[data-home-percent="' + kind + '"]', item.progress ? item.progress.percent + '%' : item.busy ? '进行中' : '—');
     const bar = find('[data-home-progress="' + kind + '"]');
     if (bar) {

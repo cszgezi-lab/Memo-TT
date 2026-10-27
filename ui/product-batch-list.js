@@ -118,5 +118,18 @@ export function mountBatchList({panel,app,run,host}){
     for(const input of panel.querySelectorAll('[data-select-batch]')){input.addEventListener('click',e=>e.stopPropagation());input.addEventListener('change',()=>{input.checked?selected.add(input.dataset.selectBatch):selected.delete(input.dataset.selectBatch);selectionState(readViewState(app));lastPaint='';});}
     for(const node of panel.querySelectorAll('[data-batch-id]')){const b=p.items.find(b=>b.id===node.dataset.batchId);if(node.open)fill(node,b,s);node.addEventListener('toggle',()=>{if(node.open&&!node.querySelector('[data-batch-body]').hasChildNodes())fill(node,b,readViewState(app));});}
   }
-  return {paint};
+  function revealBatch(id){
+    const s=readViewState(app),batch=(s.batches??[]).find(row=>row.id===id&&row.status!=='deleted');
+    if(!batch)return null;
+    paint(s); // Hydrate the current chat before setting its local browse state.
+    $('[data-batch-search]').value='';$('[data-batch-status]').value='active';
+    const options={...pageOptions(),query:'',status:'active',page:1},first=pageSummaryBatches(s.batches,options);
+    currentPage=1;
+    for(let page=1;page<=first.pages;page++)if(pageSummaryBatches(s.batches,{...options,page}).items.some(row=>row.id===id)){currentPage=page;break;}
+    lastPaint='';paint(s);
+    const node=[...panel.querySelectorAll('[data-batch-id]')].find(row=>row.dataset.batchId===id);
+    if(node){node.open=true;fill(node,batch,s);}
+    return node??null;
+  }
+  return {paint,revealBatch};
 }

@@ -204,7 +204,7 @@ export function mountMemoryManagement({panel,app,run,host}){
     else await app.remember(text,$('[data-people]').value,{category:$('[data-note-category]').value,subject:$('[data-note-subject]').value,target:$('[data-note-target]').value,field:$('[data-note-field]').value,eventRef:$('[data-note-event]').value});
     $('[data-note]').value='';
   }
-  return {paint,edit,remember,addFact,selectCategory:key=>selectCategory(key)};
+  return {paint,edit,remember,addFact,selectCategory:key=>selectCategory(key),revealBatch:id=>batchList.revealBatch(id)};
 }
 
 export function dictionaryHTML(){return `<div class="memo-card"><h4 hidden>字典与标签</h4><p data-dictionary-kinds class="memo-help" hidden></p>${field('查找词条','<input data-dictionary-search placeholder="姓名、别称、地点">')}<label class="memo-toggle" hidden><span>显示已删除词条</span><input type="checkbox" data-dictionary-deleted></label><p data-dictionary-count class="memo-help"></p><div data-dictionary-list></div><div class="memo-actions"><button type="button" data-dictionary-prev>上一页</button><button type="button" data-dictionary-next>下一页</button><button type="button" data-dictionary-add aria-expanded="false">新增词条</button></div><div data-dictionary-editor hidden><div class="memo-word-identity">${field('正式名称','<input data-dictionary-name maxlength="80">')}${field('别称','<input data-dictionary-aliases placeholder="用逗号分隔">')}</div>${field('关联检索词（不是别名）','<input data-dictionary-related placeholder="例如校刊、转校手续；用逗号分隔">')}<div class="memo-actions"><button type="button" data-dictionary-save>保存词条</button><button type="button" data-dictionary-clear>清空</button></div></div></div>`;}

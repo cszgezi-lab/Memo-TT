@@ -31,7 +31,7 @@ import {qualityPanelHTML,mountQualityView} from './product-quality-view.js';
 import {peopleHTML,mountPeopleView} from './product-people-view.js';
 import {extractionHTML,mountExtractionView} from './product-extraction-view.js';
 import {taskMonitorHTML,mountTaskMonitor} from './product-task-monitor.js';
-import {phoneHomeHTML,paintPhoneHome,UI_PRODUCT_LABEL} from './product-phone-home.js';
+import {phoneHomeHTML,paintPhoneHome,UI_PRODUCT_LABEL,homeBatchTarget} from './product-phone-home.js';
 import {paintPlannedBatchPreview} from './product-batch-list.js';
 
 const ID='memo-product-shell';
@@ -743,9 +743,9 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  for(const selector of ['[data-range-mode]','[data-count]','[data-start]','[data-end]','[data-batch-size]'])$(selector)?.addEventListener(selector==='[data-range-mode]'?'change':'input',syncSummaryRange);
  function reveal(node){for(let parent=node;parent&&parent!==panel;parent=parent.parentElement)if(parent.tagName==='DETAILS')parent.open=true;painting.flush();}
  function openUpdateSettings(selector='[data-update-settings]'){setPage('modules');showSettingsPreset(selector.includes('persona')?'persona':'summary',true);return 'modules';}
- function openHomeTasks(kind=phoneWorkflow,{manual=false,batches=false}={}){
+ function openHomeTasks(kind=phoneWorkflow,{manual=false,batches=false,force=false}={}){
    const mode=batches?'batches':manual?'manual':'task',control=$('[data-home-'+(batches?'batches':manual?'manual':'manual')+'="'+kind+'"]'),scroll=panel.closest('.memo-workbench-content'),top=scroll?.scrollTop;
-   if(!homeTaskCenter.hidden&&homeTaskCenter.dataset.owner===kind&&homeTaskCenter.dataset.mode===mode){homeTaskCenter.hidden=true;homeTaskCenter.open=false;control?.setAttribute('aria-expanded','false');return 'home';}
+   if(!force&&!homeTaskCenter.hidden&&homeTaskCenter.dataset.owner===kind&&homeTaskCenter.dataset.mode===mode){homeTaskCenter.hidden=true;homeTaskCenter.open=false;control?.setAttribute('aria-expanded','false');return 'home';}
    restoreNearUpdates();if(currentPage!=='home')setPage('home');showPhoneWorkflow(kind);homeTaskCenter.hidden=false;homeTaskCenter.dataset.owner=kind;homeTaskCenter.dataset.mode=mode;homeTaskCenter.classList.toggle('memo-direct-batches',batches);homeTaskCenter.classList.toggle('memo-near-manual',manual);$('[data-home-workflow="'+kind+'"]').append(homeTaskCenter);homeTaskCenter.open=true;
    for(const form of $$('[data-home-memory-manual],[data-home-persona-manual]'))form.hidden=true;
    for(const node of homeTaskCenter.querySelectorAll('[data-summary-memory-batches],[data-summary-persona-batches]'))node.open=false;
@@ -754,6 +754,25 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  }
  $('[data-home-drawer-close]').addEventListener('click',()=>{homeTaskCenter.open=false;homeTaskCenter.hidden=true;});
  for(const control of $$('[data-home-batches]'))control.addEventListener('click',()=>openHomeTasks(control.dataset.homeBatches,{batches:true}));
+ for(const control of $$('[data-home-state]'))control.addEventListener('click',()=>{
+   const kind=control.dataset.homeState,s=readViewState(app),target=homeBatchTarget(s,kind);
+   openHomeTasks(kind,{batches:true,force:true});
+   let node=null;
+   if(target&&kind==='memory')node=management.revealBatch(target.id);
+   if(target&&kind==='persona'){
+     const row=personaBatchItems.find(row=>Boolean(row.candidate)===Boolean(target.candidate)&&row.startIndex===target.startIndex&&row.endIndex===target.endIndex);
+     node=row?[...$$('[data-persona-compact]')].find(node=>node.dataset.personaCompact===row.selectionKey):null;
+   }
+   if(node){
+     const rows=[...$('[data-unified-batches="'+kind+'"]').querySelectorAll('[data-compact-start]')].sort((a,b)=>Number(a.dataset.compactStart)-Number(b.dataset.compactStart));
+     unifiedPages[kind].page=Math.floor(rows.indexOf(node)/unifiedPages[kind].size)+1;
+     node.open=true;paintSummaryModules(readViewState(app));
+     // Persona rows are recreated by their painter; find the current node.
+     if(kind==='persona')node=[...$$('[data-persona-compact]')].find(row=>row.dataset.personaCompact===node.dataset.personaCompact)??node;
+     const summary=node.querySelector('summary');summary?.focus({preventScroll:true});
+     (node.querySelector('[data-batch-body],.memo-compact-detail')??node).scrollIntoView?.({block:'nearest'});
+   }else $(kind==='persona'?'[data-summary-persona-batches]':'[data-summary-memory-batches]').scrollIntoView?.({block:'nearest'});
+ });
  for(const control of $$('[data-home-manual]'))control.addEventListener('click',()=>openHomeTasks(control.dataset.homeManual,{manual:true}));
  for(const control of $$('[data-home-sync]'))control.addEventListener('click',()=>{const persona=control.dataset.homeSync==='persona';void run(()=>persona?app.queueDynamicPersona({catchUp:true}):app.catchUpAutomatic(),{name:persona?'dynamic-persona':'focus-summary',button:control});});
  for(const control of $$('[data-home-enable]'))control.addEventListener('click',()=>{const kind=control.dataset.homeEnable,key=kind==='memory'?'autoSummaryEnabled':'dynamicPersonaEnabled',value=!readViewState(app).settings[key];void run(async()=>{await (kind==='memory'?app.setAutomatic(value):app.setDynamicPersona(value));fill({apiOnly:true});},{name:kind==='memory'?'auto-start':'dynamic-persona',button:control});});
