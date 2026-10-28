@@ -1,4 +1,28 @@
 import { SummaryResponseError } from './errors.js';
+import { coverageState } from './contracts.js';
+import { clone,sha256 } from './utils.js';
+import { isolateDraftIds } from './summary-stages.js';
+
+// The engine stamps actual repaired rows after binding and validating them.
+// Reconcile only missing coverage backed by that exact operation/row receipt,
+// including an old cached repaired bundle. Explicit statuses remain untouched.
+export function reconcileRepairedFloorCoverage(bundle,messages,{operationId,scope}) {
+  requireIndependentFloorSummaries(bundle,messages);
+  const expected=messages.map(m=>({sourceId:m.id,version:m.version,hash:m.hash,contentHash:m.contentHash,fragmentId:m.fragmentId}));
+  const missing=coverageState(bundle.coverage,expected).missing;
+  let added=0;
+  for(const row of bundle.summaryView){
+    const id=`repair-floor-${sha256([operationId,row.sourceRefs]).slice(0,24)}`;
+    // A resumed application runs the cached rows through its existing ID
+    // isolation adapter; recognize that adapter's exact receipt spelling too.
+    const isolated=scope?isolateDraftIds({summaryView:[{id}]},scope,operationId).summaryView[0].id:id;
+    if(row.id!==id&&row.id!==isolated)continue;
+    const ref=row.sourceRefs[0];
+    if(!missing.some(m=>m.sourceId===ref.sourceId&&(m.fragmentId??null)===(ref.fragmentId??null)))continue;
+    bundle.coverage.processed.push(clone(ref));added++;
+  }
+  return added;
+}
 
 /** Input rows have already passed the shared source-reference binding. */
 export function requireIndependentFloorSummaries(bundle,messages) {

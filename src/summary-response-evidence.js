@@ -28,7 +28,12 @@ export async function readCachedFailureResponses({batches,readTask,readCheckpoin
   const ids=[...new Set([row.operationId,row.previousOperation,...(row.attempts??[]).slice(-2)].filter(id=>typeof id==='string'))].slice(0,3);
   for(const id of ids){
    const task=await read(id);if(!task)continue;
-   const add=(value,operationId)=>{if(value?.retryModel!==true||value.raw===undefined)return;const responseExcerpt=modelResponseExcerpt(value.raw,{secrets});if(responseExcerpt)out.push({origin:'cached-unvalidated-response',batchNumber:row.number,startIndex:row.startIndex,endIndex:row.endIndex,operationId,updatedAt:value.updatedAt,responseExcerpt});};
+   const add=(value,operationId)=>{
+    if(value?.raw===undefined)return;
+    const responseExcerpt=modelResponseExcerpt(value.raw,{secrets});
+    const sourceLocators=(value.batch?.sourceMessages??task.batch?.sourceMessages??[]).slice(0,200).map(m=>({sourceId:m.id,floorIndex:m.index,...(m.fragmentId!=null?{fragmentId:m.fragmentId}:{})}));
+    if(responseExcerpt)out.push({origin:'cached-unvalidated-response',batchNumber:row.number,startIndex:row.startIndex,endIndex:row.endIndex,operationId,updatedAt:value.updatedAt,...(sourceLocators.length?{sourceLocators}:{}),responseExcerpt});
+   };
    add(task,id);
    const plan=task.requestPlan?.splitPlan??(await readCheckpoint(id))?.splitPlan??[];check();
    for(const child of plan){if(reads>=10)break;const cached=await read(child.operationId);if(cached)add(cached,child.operationId);}

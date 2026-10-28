@@ -10,7 +10,7 @@ import {
 } from './contracts.js';
 import { ScopeConflictError, ShiyiError, SummaryResponseError, ValidationError } from './errors.js';
 import { abortError, clone, estimateUnits, estimateModelInputUnits, sha256, stableStringify, throwIfAborted } from './utils.js';
-import { requireIndependentFloorSummaries } from './floor-summaries.js';
+import { requireIndependentFloorSummaries,reconcileRepairedFloorCoverage } from './floor-summaries.js';
 import { safeLogDetails } from './product-runtime-log.js';
 import { diagnosticRequestId, errorDiagnostics, jsonFailure, contentType } from './diagnostics.js';
 import { resolveEventMerges } from './event-consolidation.js';
@@ -1081,7 +1081,7 @@ export class SummaryEngine {
         resolveEventMerges(bundle,request.relevantRecords,{deferUnresolved:true,stageCrossBatch:this.stageCrossBatchMerges,onDeferred:({eventIndex,reason})=>emit('merge_deferred',{...baseDetails,validationIssueCount:1,validationIssues:[{path:`events[${eventIndex}].mergeInto`,reason}]},'info')});
         if(this.requireFloorSummaries){
           phase='floors';
-          let details;
+          let details,repairedNow=false;
           try{details=requireIndependentFloorSummaries(bundle,child.sourceMessages);}
           catch(error){
             if(this.verified||!this.recoveryEnabled||error.details?.invalidRows||error.details?.duplicateCount||error.details?.emptyFloors?.length||!error.details?.missingFloors?.length)throw error;
@@ -1104,8 +1104,10 @@ export class SummaryEngine {
             for(const row of fixed.summaryView)row.id=`repair-floor-${sha256([child.operationId,row.sourceRefs]).slice(0,24)}`;
             bundle.summaryView.push(...fixed.summaryView);
             details=requireIndependentFloorSummaries(bundle,child.sourceMessages);
-            await keepResponse(bundle);
+            repairedNow=true;
           }
+          const reconciled=reconcileRepairedFloorCoverage(bundle,child.sourceMessages,{operationId:child.operationId,...(this.isolateIds?{scope:child.scope}:{})});
+          if(repairedNow||reconciled)await keepResponse(bundle);
           emit('floors',{...baseDetails,...details},'success');
         }
         phase='validate';emit('validate',baseDetails);
