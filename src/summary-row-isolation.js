@@ -41,6 +41,28 @@ export function withSummaryRowIsolation(input,transform,onSkipped=()=>{}){
  }
 }
 
+// Reject the complete floor row, never guess a replacement source identity.
+// Other source/shape/binding failures retain their existing strict checks.
+export function admitFloorSourceRows(input,transform,onSkipped=()=>{}){
+ let output=input,skippedFloors=0,sourceError;
+ for(;;){
+  try{
+   const expanded=transform(output);
+   if(skippedFloors&&!Object.entries(expanded).some(([key,rows])=>key!=='coverage'&&Array.isArray(rows)&&rows.length))throw sourceError;
+   return {output:expanded,skippedFloors};
+  }catch(error){
+   if(error?.code!=='VALIDATION_ERROR')throw error;
+   const detail=discardInvalidDetailRows(output,error.details);
+   if(detail.skippedRecords){output=detail.output;onSkipped(detail);continue;}
+   const issue=error.details?.validationIssues?.find(issue=>issue.reason==='unknown_source'&&/^summaryView\[\d+\]\.sourceId$/.test(issue.path??''));
+   if(!issue)throw error;
+   const index=Number(/\[(\d+)\]/.exec(issue.path)[1]);
+   if(!Array.isArray(output.summaryView)||!output.summaryView[index])throw error;
+   sourceError??=error;output=clone(output);output.summaryView.splice(index,1);skippedFloors++;
+  }
+ }
+}
+
 // Floor event locators are optional metadata. Prune only a field explicitly
 // diagnosed as unknown_event, using the validator's same local/known ID sets.
 // Text, source evidence, coverage and required detail dependencies stay intact.

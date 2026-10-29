@@ -122,9 +122,9 @@ async function autoSummary({force=false,owner={token:appScope.epoch,version:appS
       if(appScope.core.settings.focusMode==='ask_every'&&!force){appScope.setMessage('自动总结等待侧重点，可在手动总结中处理下一批');return;}
       op.finish();
       const pending=appScope.state.batches.find(batch=>batch.trigger==='auto'&&['failed','interrupted','queued'].includes(batch.status)&&!batch.replacement&&batch.startIndex===plan.nextStart&&batch.endIndex===plan.nextEnd);
-      if(pending)await appScope.retryBatch(pending.id,{check,explicit:false});
-      else await appScope.summarize({startIndex:plan.nextStart,endIndex:plan.nextEnd,batchSize:plan.batchSize,trigger:'auto'});
+      const summaryResult=pending?await appScope.retryBatch(pending.id,{check,explicit:false}):await appScope.summarize({startIndex:plan.nextStart,endIndex:plan.nextEnd,batchSize:plan.batchSize,trigger:'auto'});
       check();
+      if(summaryResult?.partialSummary){appScope.autoPending=false;return summaryResult;}
       appScope.autoHistoryAttempts=0;appScope.autoRetryAt=0;appScope.autoFailureCount=0;
       if(!force)queueAutomaticSummary();
     }catch(error){

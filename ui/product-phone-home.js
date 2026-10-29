@@ -6,7 +6,7 @@ export const UI_PRODUCT_LABEL = 'Memo';
 
 const validFloor = value => Number.isSafeInteger(value) && value >= 0;
 const itemsOf = value => Array.isArray(value) ? value : [];
-const isFailure = row => ['failed', 'interrupted'].includes(row?.status);
+const isFailure = row => ['failed', 'interrupted'].includes(row?.status) || Boolean(row?.partialSummary?.missingFloors?.length);
 const isPending = row => ['queued', 'pending', 'running', 'staged'].includes(row?.status);
 const unfinished = plan => ['running', 'paused', 'failed'].includes(plan?.status);
 // Navigation reads durable rows only; it never creates or retries work.

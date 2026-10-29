@@ -75,7 +75,7 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
     batchSize??=appScope.core.settings.summaryBatchSize;
     const op=appScope.begin();op.monitor={trigger:trigger==='auto'?'auto':'manual',phase:'preparing',completedBatches:0,totalBatches:0,requestNumber:0,...(Number.isSafeInteger(startIndex)?{startIndex}:{}),...(Number.isSafeInteger(endIndex)?{endIndex}:{})};appScope.activeSummaryOperation=op;
     if(trigger==='auto'&&appScope.autoRunOwner)appScope.autoRunOwner.controller=appScope.active;
-    let saved=0,currentBatch=null,remainingPlanned=0,bookkeepingWarning=false,deferredRecords=0,skippedRecords=0,skippedLinks=0,automaticQualityIds=[],usedVerification=appScope.core.settings.summaryReviewEnabled,stagedOnly=false;
+    let saved=0,currentBatch=null,remainingPlanned=0,bookkeepingWarning=false,deferredRecords=0,skippedRecords=0,skippedLinks=0,automaticQualityIds=[],usedVerification=appScope.core.settings.summaryReviewEnabled,stagedOnly=false,partialSummary=null;
     appScope.summaryFeedback('running','正在读取总结范围…',trigger);
     try{
       // Read current source again only inside the same bound chat.
@@ -177,6 +177,7 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
           if(event.phase==='retry_wait')appScope.summaryFeedback('running',`接口暂时异常，${Math.max(1,Math.ceil(event.details.retryDelayMs/1000))} 秒后重试当前片段；已保存内容不重做`,trigger);
         }});
         op.check();if(result.status!=='saved')throw Object.assign(new Error((appScope.core.readViewState?.()??appScope.core.state).errorMessage??'总结未保存'),{code:result.failure?.code??result.errorCode??'SUMMARY_RESPONSE_ERROR',details:result.errorDetails});
+        if(result.partialSummary&&(currentBatch.replacement||oldOperation&&oldOperation!==operationId))throw Object.assign(new Error('覆盖候选只有部分有效内容，尚未替换旧正式记忆；可从失败缓存查看。'),{code:'COVERAGE_INCOMPLETE'});
         const publishingAt=Date.now();let publishedView=null;
         if(currentBatch.replacement){
           currentBatch={...currentBatch,status:'queued',replacementReady:true,sourceRevision:range.sourceRevision,requests:result.requests,updatedAt:Date.now()};
@@ -187,7 +188,7 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
         }else{
           const applied=await appScope.core.updateMemoryControls({operations:{...Object.fromEntries(currentBatch.attempts.map(id=>[id,'deleted'])),[operationId]:'active'}},{returnView:'deferred'});op.check();
           publishedView=applied?.memoryView;
-          currentBatch={...currentBatch,status:'saved',savedOperationId:operationId,requests:result.requests,updatedAt:Date.now()};
+          currentBatch={...currentBatch,status:'saved',savedOperationId:operationId,partialSummary:result.partialSummary??null,requests:result.requests,updatedAt:Date.now()};
           await appScope.workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]).catch(error=>{bookkeepingWarning=true;appScope.runtimeLog.record({run:diagnosticRun,task:'summary',phase:'checkpoint_warning',level:'warning',details:{...errorDiagnostics(error),storageArtifact:'checkpoint'}});});
         }
         saved++;appScope.summaryMonitor(op,{phase:'saving',completedBatches:saved});if(!stagedOnly)appScope.state.savedThrough=Math.max(appScope.state.savedThrough,item.endIndex);appScope.state.stale=false;
@@ -195,6 +196,7 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
         // Use the refreshed committed batches, not the pre-request running row.
         try{await appScope.syncAutoStartFloor(diagnosticRun);}catch(error){void appScope.reportError(error,{task:'summary',stage:'background'});}
         publishMs+=Date.now()-publishingAt;
+        if(result.partialSummary){partialSummary=result.partialSummary;break;}
         if(!result.currentOnly&&appScope.core.settings.autoQualityEnabled&&!usedVerification&&!appScope.core.settings.summaryReviewEnabled){
           const batch=appScope.state.batches.find(b=>b.operationId===operationId),ids=MEMORY_CATEGORIES.flatMap(k=>batch?.records?.[k]??[]).map(r=>r.id);
           const risks=new Set(qualityTargets(appScope.state.rawRecords,appScope.qualitySaved).map(r=>r.id));
@@ -204,6 +206,10 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
         // summary lock. The batch's durable autoIndex marker survives reloads.
       }
       if(stagedOnly){appScope.summaryFeedback('info','覆盖候选已保存，旧记忆仍在使用；请继续未完成批次，整组成功后替换。',trigger);return {status:'staged',batches:saved};}
+      if(partialSummary){
+        appScope.summaryFeedback('warning',`部分已保存：${partialSummary.savedFloors.length} 楼摘要及通过校验的明细已入库，${partialSummary.missingFloors.length} 楼未保存。本轮已停止；未保存楼层可在批次详情查看并用手动更新补建。`,trigger);
+        return {status:'saved',batches:saved,partialSummary,level:'warning',timings:{prepareMs:(firstRequestAt??Date.now())-taskStarted,modelMs,publishMs}};
+      }
       // Event decisions were finalized by the committed memory refresh.
       if(automaticQualityIds.length)appScope.queueAutomaticQuality(automaticQualityIds);
       if(op.token===appScope.epoch)appScope.summaryFeedback(bookkeepingWarning||deferredRecords||skippedRecords||skippedLinks?'warning':'success',`总结成功并已保存：#${ranges[0].startIndex}–${ranges.at(-1).endIndex}，共 ${saved} 批。${skippedRecords?`已跳过 ${skippedRecords} 条无效明细，未写入正式记忆；详情见运行日志。`:''}${skippedLinks?`已忽略 ${skippedLinks} 处无效事件关联，摘要正文已保留。`:''}${deferredRecords?`${deferredRecords} 条记忆待核对，暂不注入；可在记忆 → 内容校对中单独修正。`:''}${bookkeepingWarning?'批次进度资料待恢复，记忆正文已确认保存，无需重新生成。':''}`,trigger);

@@ -648,7 +648,7 @@ export function createProductShellController({
       state.capabilities.summary = 'saved_readback_verified';
       mark(PRODUCT_SHELL_STATUS.SAVED);
       state.job = { ...state.job, status: result.status, requests: result.requests, completedAt: now() };
-      return { status: PRODUCT_SHELL_STATUS.SAVED,...(batch.rules?.summaryCurrentOnly?{currentOnly:true}:{}), operationId, requests: result.requests, committedRevision: snapshot.committedRevision, counts: clone(state.lastSaved.counts) };
+      return { status: PRODUCT_SHELL_STATUS.SAVED,...(batch.rules?.summaryCurrentOnly?{currentOnly:true}:{}),...(result.partialSummary?{partialSummary:clone(result.partialSummary)}:{}), operationId, requests: result.requests, committedRevision: snapshot.committedRevision, counts: clone(state.lastSaved.counts) };
     } catch (error) {
       if (!tokenValid(token, session)) return { status: state.status, errorCode: state.errorCode, operationId };
       if (preflightAbort.signal.aborted || error?.code === 'CANCELED' || error?.name === 'AbortError') {

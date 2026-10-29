@@ -28,7 +28,7 @@ import { moduleSummaryContract, moduleSummaryInstructions, expandModuleSummary, 
 import { applySummaryPreset, summaryPresetFromRules, PRESET_TRANSPORT_GUARD } from './summary-presets.js';
 import {parseSummaryJson} from './summary-json.js';
 import {recoverModuleJsonRows} from './summary-json-recovery.js';
-import {discardInvalidDetailRows,discardInvalidFloorEventLinks,withSummaryRowIsolation} from './summary-row-isolation.js';
+import {discardInvalidDetailRows,discardInvalidFloorEventLinks,withSummaryRowIsolation,admitFloorSourceRows} from './summary-row-isolation.js';
 import {summaryKnowledgeSources,SUMMARY_KNOWLEDGE_EVIDENCE_RULE} from './summary-knowledge-evidence.js';
 import {NARRATIVE_READING_RULE,narrativeCounters,assertNarrativeReadingContent,isNarrativeRegexConfig} from './narrative-reading.js';
 
@@ -750,6 +750,7 @@ export class SummaryEngine {
       failedChildren: [],
       requests: 0,
       receipts: clone(checkpoint?.receipts ?? []),
+      ...(checkpoint?.partialSummary?{partialSummary:clone(checkpoint.partialSummary)}:{}),
       startedAt: this.now(),
     };
     // The host validates these exact immutable boundaries before API I/O and
@@ -908,6 +909,8 @@ export class SummaryEngine {
           let recoveredRows=0;
           try{await parseModelResponse(prior.raw,{allowRowRecovery:true,allowToolTransport:this.summaryArmor.antiTruncation,onNormalize:details=>{recoveredRows+=details.skippedRecords??0;}});if(recoveredRows)prior.retryModel=false;}catch{/* normal explicit retry remains available */}
         }
+        const sourceAdmission=this.requireFloorSummaries&&!this.verified&&!this.staged&&children.length===1;
+        const expandSources=value=>expandModuleSummary(expandCompactSummary(value,child.sourceMessages),child.sourceMessages);
         let raw,cachedForeignSource=false,cachedInvalidTool=null;
         if(prior?.raw!==undefined&&!prior.retryModel&&!this.verified&&!this.staged){
           // Explicit resume must not replay an irreparably foreign source
@@ -929,6 +932,10 @@ export class SummaryEngine {
             const bound=bindDraftBundle(expanded,{scope:child.scope,operationId:child.operationId,expectedRevision:child.expectedRevision,sourceRefs:evidenceRefsFor(child)});
             cachedForeignSource ||= invalidResponseSource(validateDraftBundle(bound,{allowedSourceIds:allowed,knownRecordIds:context.ids??new Set(),expectedSourceRefs:sourceRefsFor(child)}));
           }catch(error){if(invalidResponseSource(error?.details))cachedForeignSource=true;else if(error?.code==='SUMMARY_TOOL_RESPONSE_INVALID')cachedInvalidTool=error;/* Other parse/shape recovery remains authoritative. */}
+          if(cachedForeignSource&&sourceAdmission)try{
+            const cached=unwrapModuleSummaryResponse(await parseModelResponse(prior.raw,{allowToolTransport:this.summaryArmor.antiTruncation}));
+            if(admitFloorSourceRows(cached,expandSources).skippedFloors)cachedForeignSource=false;
+          }catch{/* No usable source-bound contents: retain normal explicit retry. */}
           if(cachedForeignSource||cachedInvalidTool){
             const patch={retryModel:true,...(cachedInvalidTool?{manualRetryRequired:true}:{})};this.repository.retainPrivateResponse?.(child.scope,child.operationId,patch);
             await this.repository.savePrivateTask?.(child.scope,child.operationId,patch).catch(error=>emit('checkpoint_warning',{...baseDetails,...errorDiagnostics(error),storageArtifact:'response-cache'},'warning'));
@@ -970,7 +977,10 @@ export class SummaryEngine {
           parsed={...parsed};for(const key of VERIFICATION_MODULES)if(!Object.hasOwn(parsed,key))parsed[key]=[];
         }
         phase='validate';
-        const expanded=withSummaryRowIsolation(parsed,value=>expandModuleSummary(expandCompactSummary(value,child.sourceMessages),child.sourceMessages),reportSkipped);
+        const admitted=sourceAdmission?admitFloorSourceRows(parsed,expandSources,reportSkipped):null;
+        const partialSources=Boolean(admitted?.skippedFloors);
+        if(partialSources)skippedDetailRows=true; // Keep the original response, including rejected rows.
+        const expanded=admitted?.output??withSummaryRowIsolation(parsed,expandSources,reportSkipped);
         if(expanded!==parsed){
           const links=moduleLinkNormalization(parsed,expanded,child.sourceMessages);
           emit('normalize',{...baseDetails,...links,normalizedSourceRefs:normalizedModuleSourceRefs(parsed,expanded),compactFloors:expanded.summaryView.length,compactChanges:Object.keys(expanded).filter(k=>!['events','summaryView'].includes(k)&&Array.isArray(expanded[k])).reduce((n,k)=>n+expanded[k].length,0)},links.resolvedSourceTextHints||links.wholeFloorEventAnnotations?'warning':'success');
@@ -1079,7 +1089,17 @@ export class SummaryEngine {
         if(timeCorrections.length)emit('validate',{...baseDetails,sourceTimeCorrections:timeCorrections.length},'info');
         emit('character_details',{...baseDetails,journalCount:detailRows.filter(r=>r.innerLife?.text).length,stageObservations:detailRows.filter(r=>r.innerLife?.origin==='stage_observation').length,rejectedDialogues:detailRows.reduce((n,r)=>n+(r.detailWarnings?.rejectedDialogues??0),0)},detailRows.some(r=>r.detailWarnings?.rejectedDialogues)?'warning':'info');
         resolveEventMerges(bundle,request.relevantRecords,{deferUnresolved:true,stageCrossBatch:this.stageCrossBatchMerges,onDeferred:({eventIndex,reason})=>emit('merge_deferred',{...baseDetails,validationIssueCount:1,validationIssues:[{path:`events[${eventIndex}].mergeInto`,reason}]},'info')});
-        if(this.requireFloorSummaries){
+        if(partialSources){
+          const present=child.sourceMessages.filter(m=>bundle.summaryView.some(row=>row.sourceRefs?.length===1&&row.sourceRefs[0].sourceId===m.id&&row.sourceRefs[0].fragmentId===m.fragmentId));
+          requireIndependentFloorSummaries(bundle,present);
+          const missing=child.sourceMessages.filter(m=>!present.includes(m));
+          for(const m of missing){
+            if([...bundle.coverage.excluded,...bundle.coverage.unprocessed].some(ref=>(ref.sourceId??ref.sourceRef?.sourceId)===m.id))continue;
+            bundle.coverage.unprocessed.push({...sourceRefsFor({sourceMessages:[m]})[0],reason:'本次未返回通过来源校验的独立摘要，尚未保存'});
+          }
+          state.partialSummary={savedFloors:present.map(m=>m.index),missingFloors:missing.map(m=>m.index),invalidRows:admitted.skippedFloors};
+          emit('records_skipped',{...baseDetails,skippedRecords:0,skippedFloors:admitted.skippedFloors,expected:child.sourceMessages.length,covered:present.length},'warning');
+        }else if(this.requireFloorSummaries){
           phase='floors';
           let details,repairedNow=false;
           try{details=requireIndependentFloorSummaries(bundle,child.sourceMessages);}
@@ -1160,7 +1180,7 @@ export class SummaryEngine {
           }
           validation=validateDraftBundle(bundle,validationOptions);
         }
-        if(!validation.valid&&this.recoveryEnabled&&!this.verified){
+        if(!validation.valid&&this.recoveryEnabled&&!this.verified&&!partialSources){
           const repairRequest=referenceRepairRequest(request,bundle,validation);
           if(repairRequest){
             emit('partial_repair',{...baseDetails,purpose:'reference_repair',...safeLogDetails(validation)},'warning');
@@ -1170,7 +1190,7 @@ export class SummaryEngine {
           }
         }
         const repairTargets=repairableEnumTargets(bundle,validation);
-        if(!validation.valid&&repairTargets.length&&!this.verified){
+        if(!validation.valid&&repairTargets.length&&!this.verified&&!partialSources){
           // A single bounded field-only correction. Normal summaries retain one
           // model call. Source, scope, chronology and coverage rules stay intact.
           const repairRequest=createEnumRepairRequest(bundle,repairTargets,request);
@@ -1198,7 +1218,7 @@ export class SummaryEngine {
             if(!validation.valid)throw new ValidationError('enum correction did not pass validation',{...validation,repairAttempted:true});
           }else emit('repair_skipped',{...baseDetails,inputLimit:configuredLimit,inputUnits:repairUnits,code:'INPUT_BUDGET_EXCEEDED'},'warning');
         }
-        if(!validation.valid&&this.recoveryEnabled&&!this.verified){
+        if(!validation.valid&&this.recoveryEnabled&&!this.verified&&!partialSources){
           const categories=repairCategories(validation);
           if(categories.length){
             phase='repair_request';
@@ -1229,12 +1249,13 @@ export class SummaryEngine {
         await tryQuarantineEnums();
         if (!validation.valid) throw new ValidationError('summary DraftBundle failed validation', validation);
         const coverage = coverageState(bundle.coverage, sourceRefs);
-        if (!coverage.complete) {
+        if (!coverage.complete && !state.partialSummary) {
           const incomplete = new ValidationError('summary coverage is incomplete; unprocessed source range must be resumed', { coverage });
           incomplete.code = 'COVERAGE_INCOMPLETE';
           throw incomplete;
         }
         throwIfAborted(signal);
+        if(state.partialSummary&&!DRAFT_CATEGORIES.some(k=>k!=='coverage'&&bundle[k]?.length))throw new ValidationError('no source-verified content remains');
         phase='commit';emit('commit',baseDetails);
         const receipt = await this.repository.commitBundle(bundle, { scope: child.scope, expectedRevision: child.expectedRevision, sourceRevision: child.sourceRevision });
         state.receipts.push(receipt);
@@ -1253,7 +1274,7 @@ export class SummaryEngine {
           completedChildIndexes: state.completedChildren,
           failedChildIndexes: state.failedChildren,
           totalChildren: children.length,
-          receipts: clone(state.receipts),
+          receipts: clone(state.receipts),...(state.partialSummary?{partialSummary:clone(state.partialSummary)}:{}),
         }).catch(error=>emit('checkpoint_warning',{...baseDetails,...errorDiagnostics(error),storageArtifact:'checkpoint'},'warning'));
         if (typeof onProgress === 'function') await onProgress(clone(state));
       } catch (error) {
@@ -1298,7 +1319,7 @@ export class SummaryEngine {
     state.status = 'done';
     state.completedAt = this.now();
     if (typeof this.repository.saveCheckpoint === 'function') await this.repository.saveCheckpoint(batch.operationId, {
-      status: 'done', scope: clone(batch.scope), sourceRevision: batch.sourceRevision, configVersion: String(batch.configVersion), rulesVersion: String(batch.rulesVersion), focusVersion: checkpointBinding.focusVersion, splitPlanFingerprint, splitPlan: clone(splitPlan), parentRange: clone(batch.parentRange), completedChildIndexes: state.completedChildren, failedChildIndexes: [], totalChildren: children.length, receipts: clone(state.receipts),
+      status: 'done', scope: clone(batch.scope), sourceRevision: batch.sourceRevision, configVersion: String(batch.configVersion), rulesVersion: String(batch.rulesVersion), focusVersion: checkpointBinding.focusVersion, splitPlanFingerprint, splitPlan: clone(splitPlan), parentRange: clone(batch.parentRange), completedChildIndexes: state.completedChildren, failedChildIndexes: [], totalChildren: children.length, receipts: clone(state.receipts),...(state.partialSummary?{partialSummary:clone(state.partialSummary)}:{}),
           }).catch(e=>emit('checkpoint_warning',{...errorDiagnostics(e),storageArtifact:'checkpoint'},'warning'));
     // An unsplit child shares the parent's key. Its frozen batch is still
     // needed if the host exits before activation/bookkeeping. Split parents

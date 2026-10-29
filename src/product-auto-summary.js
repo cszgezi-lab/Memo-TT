@@ -17,7 +17,7 @@ export function autoSummaryPlan(batches=[],options={}){
 }
 // Absolute host floors, not turns or batchNumber * the current batch size.
 export function hasNewerSavedCoverage(batch,batches){
-  return !batch.replacement&&Number.isFinite(batch.updatedAt)&&batches.some(saved=>saved.id!==batch.id&&saved.status==='saved'&&saved.updatedAt>batch.updatedAt&&saved.startIndex<=batch.startIndex&&saved.endIndex>=batch.endIndex);
+  return !batch.replacement&&Number.isFinite(batch.updatedAt)&&batches.some(saved=>saved.id!==batch.id&&saved.status==='saved'&&!saved.partialSummary?.missingFloors?.length&&saved.updatedAt>batch.updatedAt&&saved.startIndex<=batch.startIndex&&saved.endIndex>=batch.endIndex);
 }
 function legacyAutoSummaryPlan(batches=[],{startFloor=1,batchSize=10,keepRecent=2,lastIndex=null}={}){
   if(!Number.isSafeInteger(startFloor)||startFloor<0||!Number.isSafeInteger(batchSize)||batchSize<1||!Number.isSafeInteger(keepRecent)||keepRecent<0)throw new Error('自动总结的起点、每批楼数和保留楼数无效');
@@ -52,7 +52,7 @@ export function summaryCoverage(batches=[],{startFloor=1,originFloor,lastIndex=n
   }
   const eligibleEnd=Number.isSafeInteger(lastIndex)?lastIndex-keepRecent:null,coveredRanges=[],missingRanges=[];
   if(eligibleEnd!==null&&eligibleEnd>=startFloor){
-    const sorted=batches.filter(b=>b.status!=='deleted'&&(b.status==='saved'||b.savedOperationId)&&Number.isSafeInteger(b.startIndex)&&Number.isSafeInteger(b.endIndex)&&b.endIndex>=b.startIndex).map(b=>({startIndex:Math.max(startFloor,b.startIndex),endIndex:Math.min(eligibleEnd,b.endIndex)})).filter(b=>b.startIndex<=b.endIndex).sort((a,b)=>a.startIndex-b.startIndex);
+    const sorted=batches.filter(b=>b.status!=='deleted'&&(b.status==='saved'||b.savedOperationId)&&Number.isSafeInteger(b.startIndex)&&Number.isSafeInteger(b.endIndex)&&b.endIndex>=b.startIndex).flatMap(b=>b.partialSummary?.missingFloors?.length?(b.partialSummary.savedFloors??[]).filter(n=>Number.isSafeInteger(n)&&n>=b.startIndex&&n<=b.endIndex).map(n=>({startIndex:Math.max(startFloor,n),endIndex:Math.min(eligibleEnd,n)})):[{startIndex:Math.max(startFloor,b.startIndex),endIndex:Math.min(eligibleEnd,b.endIndex)}]).filter(b=>b.startIndex<=b.endIndex).sort((a,b)=>a.startIndex-b.startIndex);
     for(const r of sorted){const last=coveredRanges.at(-1);if(last&&r.startIndex<=last.endIndex+1)last.endIndex=Math.max(last.endIndex,r.endIndex);else coveredRanges.push({...r});}
     let cursor=startFloor;for(const r of coveredRanges){if(cursor<r.startIndex)missingRanges.push({startIndex:cursor,endIndex:r.startIndex-1});cursor=r.endIndex+1;}if(cursor<=eligibleEnd)missingRanges.push({startIndex:cursor,endIndex:eligibleEnd});
   }

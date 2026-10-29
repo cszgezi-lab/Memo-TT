@@ -23,7 +23,7 @@ export async function parseWithResponseEvidence(raw,{parse,onFailure=()=>{},secr
 export async function readCachedFailureResponses({batches,readTask,readCheckpoint,check=()=>{},secrets=[]}) {
  check();const out=[],seen=new Set();let reads=0;
  const read=async id=>{check();if(!id||seen.has(id)||reads>=10)return null;seen.add(id);reads++;const task=await readTask(id);check();return task;};
- const rows=batches.filter(b=>['failed','interrupted','running','queued'].includes(b.status)).sort((a,b)=>(b.updatedAt??b.createdAt??0)-(a.updatedAt??a.createdAt??0)).slice(0,5);
+ const rows=batches.filter(b=>['failed','interrupted','running','queued'].includes(b.status)||b.status==='saved'&&b.partialSummary?.missingFloors?.length).sort((a,b)=>(b.updatedAt??b.createdAt??0)-(a.updatedAt??a.createdAt??0)).slice(0,5);
  for(const row of rows){
   const ids=[...new Set([row.operationId,row.previousOperation,...(row.attempts??[]).slice(-2)].filter(id=>typeof id==='string'))].slice(0,3);
   for(const id of ids){
