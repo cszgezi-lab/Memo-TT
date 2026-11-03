@@ -275,6 +275,9 @@ async function open({enable = true, expectedRef, passive=false,rebind=false} = {
         // The host can still hold a request prepared before a chat switch. Do
         // not put either the new chat's recall or persona in that old payload.
         if(appScope.personaWorldbook.foreignRequest(payload)){await appScope.personaWorldbook.finalize(payload,[]);return;}
+        if(!appScope.enabled||(!appScope.core.settings.injectionEnabled&&!appScope.core.settings.dynamicPersonaEnabled)){
+          await appScope.inject(payload,{preparation});return;
+        }
         const requestEpoch=appScope.epoch;
         if(appScope.state.sourceStatus?.pending)await appScope.refresh({boundOnly:true});
         let sourceMessages=[];try{sourceMessages=await appScope.core.sceneMessages?.()??[];}catch{/* Use assembled request when the source is unavailable. */}
