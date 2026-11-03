@@ -1,4 +1,4 @@
-import {clone,sha256,stableStringify,makeId,yieldLocalWork} from './utils.js';
+import {clone,sha256,sha256Async,stableStringify,makeId,yieldLocalWork} from './utils.js';
 import {scopeKey,normalizeScope} from './contracts.js';
 import {MemoryRepository} from './repository.js';
 import {losslessStore,verifiedWrite} from './reliable-storage.js';
@@ -93,7 +93,7 @@ export async function exportMemoryArchive({session,store,cleanMessages=x=>x,chec
  const personaChecks=(persona?.batches??[]).filter(b=>b.status==='saved').map(b=>({startIndex:b.startIndex,endIndex:b.endIndex,valid:b.sourceHash===sha256(cleanMessages(sourceRows.slice(b.startIndex,b.endIndex+1).map(({speaker,...m})=>m)))}));
  for(const a of [{namespace:MEMORY,key:memoryPointer(session.scope)},...[...roots,...vectorKeys.flatMap(key=>[key,key+'-jobs-v1',key+'-rebuild-v1',key+'-response-jobs-v1'])].map(name=>({namespace:WORK,key:workKey(session.scope,name)}))]){const before=await optionalLegacyRead(sourceStore,a),after=await optionalLegacyRead(store,a);await check();if(stableStringify(before)!==stableStringify(after))throw fail('导出期间档案发生变化，请重新导出');}
  const data={kind:'memo-memory-archive',version:1,archiveId:session.archive?.archiveId??sha256(makeId('archive')).slice(0,32),scope:clone(session.scope),createdAt:Date.now(),sources:sourceRows.map(descriptor),personaChecks,documents:docs};
- data.hash=sha256({...data,hash:undefined});return data;
+ data.hash=await sha256Async({...data,hash:undefined});await check();return data;
 }
 
 export async function previewMemoryArchive({archive,session,check=()=>{}}){

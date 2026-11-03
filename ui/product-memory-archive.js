@@ -5,7 +5,7 @@ export function mountMemoryArchive({panel,app,run,download}){
  panel.querySelector('.memo-settings-directory').append(section);
  const q=s=>section.querySelector(s),status=q('[data-archive-status]'),apply=q('[data-archive-apply]');let archive=null,plan=null,revision=0,busy=false;
  const task=fn=>run(async()=>{if(busy)return;busy=true;try{await fn();}catch(error){status.textContent=error.message;throw error;}finally{busy=false;}});
- q('[data-archive-export]').onclick=()=>task(async()=>{status.textContent='正在导出当前聊天的记忆档案…';await download(await app.exportMemoryArchive(),'Memo-记忆档案.json');status.textContent='导出已处理，文件保存状态见提示。';});
+ q('[data-archive-export]').onclick=()=>task(async()=>{status.textContent='正在读取存档并构建记忆档案…';const data=await app.exportMemoryArchive();status.textContent='档案已构建，正在保存并校验文件…';await download(data,'Memo-记忆档案.json');status.textContent='导出已处理，文件保存状态见提示。';});
  const select=q('[data-archive-select]'),input=q('[data-archive-file]');
  select.onclick=()=>{if(!busy){input.value='';input.click();}};
  q('[data-archive-file]').onchange=()=>{const file=q('[data-archive-file]').files?.[0],current=++revision;archive=null;plan=null;apply.hidden=true;if(!file)return;void task(async()=>{
