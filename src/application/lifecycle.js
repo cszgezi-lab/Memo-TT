@@ -184,7 +184,16 @@ function sourceEventRelevant(reason,{sameRef=false}={}){
 
 async function settledHistoryTail(){
     const context=mvuContext(appScope.host),chat=context?.chat;
-    if(!appScope.sourceContextComplete||!Array.isArray(chat)||context?.getCurrentChatId?.()!==appScope.moduleSourceChatId)return appScope.core.historyTail();
+    if(!appScope.sourceContextComplete||!Array.isArray(chat)||context?.getCurrentChatId?.()!==appScope.moduleSourceChatId){
+      const workspace=appScope.workspace;
+      const lastIndex=await appScope.core.historyTail();
+      if(workspace===appScope.workspace&&workspace?.isCurrent()&&!appScope.state.stale){
+        const live=mvuContext(appScope.host);
+        const chatId=live?.getCurrentChatId?.();
+        if(chatId&&chatId===appScope.moduleSourceChatId&&Array.isArray(live.chat)&&live.chat.length===lastIndex+1)appScope.sourceContextComplete=true;
+      }
+      return lastIndex;
+    }
     const tail=await appScope.core.historyTail({includeMessage:true}),raw=chat.at(-1);
     if(tail.totalCount!==chat.length||!raw||tail.message.text!==String(raw.text??raw.mes??raw.content??'')||tail.message.version!==(raw.version??raw.swipeId??raw.swipe_id??0))throw Object.assign(new Error('TT 尚未保存本次回复，稍后重读；已有结果保留'),{code:'HISTORY_UNAVAILABLE',details:{stage:'prepare',reason:'history_save_pending'}});
     return tail.index;
