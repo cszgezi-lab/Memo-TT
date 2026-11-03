@@ -62,12 +62,25 @@ export async function collectArchiveDocuments(store,scope,check=()=>{},vectorKey
  add(MEMORY,memoryPointer(scope));add(MEMORY,keyOf('task-catalog',scopeKey(scope)));for(const root of roots)add(WORK,workKey(scope,root));
  for(const key of vectorKeys){if(!/^vectors-[a-f0-9]{20}$/.test(key))throw fail('向量缓存标识无效');for(const name of [key,key+'-jobs-v1',key+'-rebuild-v1',key+'-response-jobs-v1'])add(WORK,workKey(scope,name));}
  let chars=0;
- while(queue.length){const {required,...a}=queue.shift(),id=addressKey(a);if(seen.has(id))continue;seen.add(id);await check();const row=await optionalLegacyRead(store,a);await check();if(!row.found){if(required)throw fail('档案依赖缺失，原成果保留');continue;}
+ while(queue.length){
+  const batch=[];
+  while(queue.length&&batch.length<4){
+   const {required,...a}=queue.shift(),id=addressKey(a);
+   if(seen.has(id))continue;
+   seen.add(id);batch.push({a,id,required});
+  }
+  await check();
+  const results=await Promise.all(batch.map(({a})=>optionalLegacyRead(store,a)));
+  await check();
+  for(const [{a,id,required},row] of batch.map((entry,index)=>[entry,results[index]])){
+   if(!row.found){if(required)throw fail('档案依赖缺失，原成果保留');continue;}
   chars+=stableStringify(row.value).length;if(chars>256*1024*1024||entries.size>20000)throw fail('档案超过本次导出容量');entries.set(id,{...a,value:row.value});
   if(a.namespace===MEMORY&&a.key===memoryPointer(scope)&&row.value.manifestRef)add(MEMORY,row.value.manifestRef,true);
   if(a.namespace===MEMORY&&row.value?.kind==='memory-manifest')for(const ref of row.value.chunks??[])add(MEMORY,ref.key,true);
   if(a.namespace===WORK){const name=a.key.slice(workKey(scope,'').length);if(name.startsWith('vectors-')){const decoded=await decodeVectorDocumentAsync(name,row.value);if(decoded?.kind==='shiyi-vector-index'&&decoded.version===2)for(const entry of Object.values(decoded.entries??{}))for(const part of entry.parts??[])add(WORK,workKey(scope,part.key),true);}}
-  scan(row.value);await yieldLocalWork({prioritized:false});
+   scan(row.value);
+  }
+  await yieldLocalWork({prioritized:false});
  }
  // Only heads can change under ordinary append-only writes. Verify all copied
  // mutable documents too, so an export never combines two user edit revisions.
