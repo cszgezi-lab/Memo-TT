@@ -134,7 +134,6 @@ function sourceEventRelevant(reason){
       // native ref getter is synchronous (TT 2.2); keep the binding only when
       // the complete native identity and the protected raw prefix still match.
       // Unknown/async references and partial contexts retain the reload path.
-      if(!appScope.sourceContextComplete)return true;
       try{const current=appScope.host.__TAURITAVERN__?.api?.chat?.current,ref=current?.ref?.call(current);if(!ref||typeof ref.then==='function'||stableStringify(ref)!==appScope.boundRefKey)return true;}
       catch{return true;}
     }
@@ -143,10 +142,17 @@ function sourceEventRelevant(reason){
     // stamps, never infer a deletion position from MESSAGE_DELETED's new count.
     // Only an untouched prefix beyond every saved/planned source can retain the
     // binding; unknown/partial contexts keep the conservative reload path.
-    if(appScope.state.stale||!appScope.workspace?.isCurrent()||!appScope.sourcePrefixVerified||!appScope.moduleSourceBaseline||appScope.moduleSourceChatId===null)return true;
+    if(appScope.state.stale||!appScope.workspace?.isCurrent()||!appScope.moduleSourceBaseline||appScope.moduleSourceChatId===null)return true;
     let context;try{context=mvuContext(appScope.host);if(context?.getCurrentChatId?.()!==appScope.moduleSourceChatId)return true;}catch{return true;}
     const chat=context?.chat;if(!Array.isArray(chat))return true;
-    if(reason==='CHAT_CHANGED'&&chat.length!==appScope.moduleSourceBaseline.length)return true;
+    const baseline=appScope.moduleSourceBaseline;
+    // A host refresh or tail update can leave every existing floor intact.
+    // Keep the current binding and its existing source verification status.
+    if((reason==='CHAT_CHANGED'||reason==='MESSAGE_UPDATED')&&chat.length>=baseline.length&&baseline.every((old,index)=>{
+      const next=appScope.moduleStamp(chat[index]);
+      return Object.keys(old).every(key=>old[key]===next[key]);
+    }))return false;
+    if(reason==='CHAT_CHANGED'||!appScope.sourcePrefixVerified)return true;
     const persona=appScope.state.dynamicPersona??{};
     const ends=[appScope.core.sourceEndIndex,...appScope.state.batches.map(b=>b.endIndex),...(persona.batches??[]).map(b=>b.endIndex),...(persona.manualPlan?.items??[]).map(b=>b.endIndex),...(persona.profiles??[]).map(p=>p.through)];
     if(!Number.isInteger(ends[0]))return true;
