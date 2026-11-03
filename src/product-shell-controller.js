@@ -832,7 +832,7 @@ export function createProductShellController({
     } finally { manualOperation = null; }
   }
 
-  async function readMemoryView({check=()=>{},reuse=null}={}) {
+  async function readMemoryView({check=()=>{},reuse=null,forOpening=false}={}) {
     check();
     if (!repository || !state.scope) return { status: 'empty', persistence: 'unavailable', records: null };
     let reuseSnapshot;
@@ -852,13 +852,14 @@ export function createProductShellController({
     savedSnapshots.delete(key);
     savedSnapshots.set(key,hit?cached:clone(snapshot));
     if(savedSnapshots.size>2)savedSnapshots.delete(savedSnapshots.keys().next().value);
-    return memoryView(snapshot);
+    return memoryView(snapshot,forOpening?stableStringify([key,snapshot.pointer]):null);
   }
-  function memoryView(snapshot){
+  function memoryView(snapshot,openingKey=null){
     return lazyViewState({
       // readScope already gives this caller an isolated projection. Copying
       // it again retains a second full audit and all original floor bodies.
       records:()=>snapshot.records,
+      ...(openingKey?{openingKey:()=>openingKey}:{}),
       events:()=>clone(snapshot.records.events),
       awarenessChanges:()=>clone(snapshot.records.awarenessChanges),
       temporal:()=>clone(snapshot.records.events.map(event=>event.temporal??event.storyTime??event.time??{kind:'unknown'})),

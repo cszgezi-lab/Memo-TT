@@ -7,13 +7,14 @@ import { RETROSPECTIVE_STORE_KEY, projectRetrospectiveRecords } from '../product
 import { retrospectiveEntries, retrospectiveState } from '../product-memory-retrospective-controller.js';
 import { MERGE_STORE_KEY, mergeJobs, projectMergedCards, settleEventMerges } from '../product-event-merge.js';
 import { memoryCards, memoryCardsAsync } from '../product-memory.js';
-import { sha256, makeId, stableStringify } from '../utils.js';
+import { clone, sha256, makeId, stableStringify } from '../utils.js';
 import { editKeepsakePatch } from '../character-journal.js';
 import { normalizeTags } from '../product-dictionary.js';
 import { factSubject, factKey, factValue } from '../product-person-profiles.js';
 
 /** memory orchestration. Dependencies are limited by service-contracts.js. */
 export function createMemoryService(appScope) {
+const openingCards=new Map();
 async function migrateWorkspace(){
     if(await appScope.globalWorkspace.read('legacy-imported'))return;
     // Only the chat explicitly opened by the user is eligible. Never scan chats.
@@ -44,7 +45,7 @@ async function refresh({savedOnly=false,recheckSources=false,boundOnly=false,sum
     appScope.recallBusy++; if(!summaryCommit&&!bookkeepingOnly)appScope.recallChanged();
     try {
     const token = appScope.epoch, bound = appScope.workspace,check=()=>{appScope.assertCurrent(token);parentCheck?.();};check();
-    const view = await appScope.core.readMemoryView({check,...(reusableView?{reuse:reusableView}:{})});check();
+    const view = await appScope.core.readMemoryView({check,forOpening:savedOnly,...(reusableView?{reuse:reusableView}:{})});check();
     if(bookkeepingOnly){
       await readBatches(view,{check});check();appScope.state.memoryControls=view.controls??{};appScope.state.summaryHold=view.controls?.automation?.summaryHold??null;
       if(appScope.memoryMutationKey()!==mutationKey||appScope.memoryMutationGuards.get(mutationKey)!==mutation||mutation&&(mutation.pending.size||mutation.revision!==mutationRevision))throw appScope.pendingMemoryMutation();
@@ -82,7 +83,15 @@ async function refresh({savedOnly=false,recheckSources=false,boundOnly=false,sum
     appScope.mergeDecisions=settled.decisions;
     appScope.state.merges=mergeJobs(appScope.state.records,appScope.mergeDecisions);
     try{await appScope.modules.sync();}catch(error){check();void appScope.reportError(error,{task:'background',stage:'background'});appScope.state.message='MVU 暂不可读，扩展区块没有使用旧值；可点击刷新重试';}
-    const cards=await memoryCardsAsync(appScope.state.records,{hidden:appScope.state.hidden,includeAwareness:true},{check});
+    const cardKey=view.openingKey&&!Object.keys(loadedQuality).length&&!loadedRetrospective
+      ?stableStringify([view.openingKey,appScope.state.hidden]):null;
+    const cachedCards=cardKey?openingCards.get(cardKey):null;
+    const cards=cachedCards?clone(cachedCards):await memoryCardsAsync(appScope.state.records,{hidden:appScope.state.hidden,includeAwareness:true},{check});
+    if(cardKey){
+      openingCards.delete(cardKey);
+      openingCards.set(cardKey,cachedCards??clone(cards));
+      if(openingCards.size>2)openingCards.delete(openingCards.keys().next().value);
+    }
     check();appScope.state.cards = projectMergedCards(appScope.modules.cards(cards),appScope.state.records,appScope.mergeDecisions,appScope.state.merges).filter(c=>!appScope.state.hidden.includes(c.id));
     await readBatches(view,{check,rows:openingBatchRows});check();
     // Publish a completed view atomically for sends. Pure additions do not
