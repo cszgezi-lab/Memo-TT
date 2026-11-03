@@ -37,7 +37,7 @@ function taskMonitor(plan=appScope.automaticPlan()){
     let current=null;
     if(appScope.activeSummaryOperation){const monitor=appScope.activeSummaryOperation.monitor??{};current={kind:'summary',trigger:monitor.trigger??batch?.trigger??'manual',phase:monitor.phase??(batch?'running':'preparing'),...(batch?{batchId:batch.id,startIndex:batch.startIndex,endIndex:batch.endIndex}:Object.fromEntries(['startIndex','endIndex'].filter(k=>Number.isSafeInteger(monitor[k])).map(k=>[k,monitor[k]]))),...Object.fromEntries(['completedBatches','totalBatches','requestNumber'].filter(k=>Number.isSafeInteger(monitor[k])&&monitor[k]>=0).map(k=>[k,monitor[k]]))};}
     else if(appScope.autoRunOwner||appScope.autoTaskOwner)current={kind:'summary',trigger:'auto',phase:'preparing',startIndex:plan.nextStart,endIndex:plan.nextEnd};
-    else if(appScope.opening||appScope.following)current={kind:'chat',trigger:null,phase:'preparing'};
+    else if(appScope.opening)current={kind:'chat',trigger:null,phase:'preparing'};
     else if(appScope.active)current={kind:'operation',trigger:null,phase:'running'};
     else if(appScope.personaLaunch||appScope.state.dynamicPersona?.busy)current={kind:'persona',trigger:null,phase:appScope.state.dynamicPersona?.busy?'running':'preparing'};
     else if(appScope.vectorJob)current={kind:'vectors',trigger:null,phase:'running'};

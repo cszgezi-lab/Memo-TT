@@ -293,8 +293,10 @@ export function createProductShellController({
     }
     for (const eventName of eventNames) {
       try {
-        const listener = () => {
-          if (state.session !== session || !shouldInvalidate(eventName)) return;
+        const listener = async () => {
+          if (state.session !== session) return;
+          const decision = shouldInvalidate(eventName);
+          if (!(decision?.then ? await decision : decision) || state.session !== session) return;
           invalidate(eventName === 'CHAT_CHANGED' ? 'CHAT_CHANGED' : eventName, eventName === 'CHAT_CHANGED' ? 'CHAT_CHANGED' : 'SOURCE_INVALIDATED');
         };
         const remove = adapterInstance.subscribe(eventName, listener);

@@ -100,7 +100,7 @@ async function startChatTracking(){
       await appScope.loadApiSettings();appScope.hostAdapter??=new HostAdapter(appScope.host);await appScope.hostAdapter.ready?.();if(appScope.disposed)return;
       bindGenerationLifecycle();appScope.tracking=true;
       for(const name of ['CHAT_CHANGED','MESSAGE_EDITED','MESSAGE_UPDATED','MESSAGE_SWIPED','MESSAGE_DELETED','MESSAGE_SWIPE_DELETED','MESSAGE_RECEIVED']){
-        try{appScope.chatListeners.push(appScope.hostAdapter.subscribe(name,()=>{
+        try{appScope.chatListeners.push(appScope.hostAdapter.subscribe(name,async()=>{
           if(appScope.disposed)return;
           if(name==='MESSAGE_RECEIVED'){
             if(!appScope.workspace?.isCurrent()||appScope.state.stale)requestChatFollow({content:true});
@@ -108,7 +108,16 @@ async function startChatTracking(){
             return;
           }
           if(name==='MESSAGE_UPDATED'&&moduleMetadataOnly()){void appScope.syncModulesQuietly();return;}
-          if(!sourceEventRelevant(name)){rememberModuleSources();appScope.queueAutomaticSummary();appScope.dynamicPersona.wake();return;}
+          let sameRef=false;
+          if(name==='CHAT_CHANGED'&&appScope.workspace?.isCurrent()&&!appScope.state.stale){
+            const epoch=appScope.epoch;
+            try{
+              const ref=await appScope.hostAdapter.currentRef();
+              sameRef=Boolean(ref)&&stableStringify(ref)===appScope.boundRefKey;
+            }catch{/* Unavailable identity retains the reload path. */}
+            if(appScope.disposed||epoch!==appScope.epoch)return;
+          }
+          if(!sourceEventRelevant(name,{sameRef})){rememberModuleSources();appScope.queueAutomaticSummary();appScope.dynamicPersona.wake();return;}
           invalidate(name);requestChatFollow({content:name!=='CHAT_CHANGED'});
         }));}catch{/* Opening the panel still verifies the current ref. */}
       }
@@ -128,8 +137,8 @@ function rememberModuleSources(){
     try{const id=context?.getCurrentChatId?.();appScope.moduleSourceChatId=typeof id==='string'&&id?id:null;}catch{appScope.moduleSourceChatId=null;}
   }
 
-function sourceEventRelevant(reason){
-    if(reason==='CHAT_CHANGED'){
+function sourceEventRelevant(reason,{sameRef=false}={}){
+    if(reason==='CHAT_CHANGED'&&!sameRef){
       // TT also emits CHAT_CHANGED after API/regex display refreshes. Its
       // native ref getter is synchronous (TT 2.2); keep the binding only when
       // the complete native identity and the protected raw prefix still match.
@@ -152,7 +161,8 @@ function sourceEventRelevant(reason){
       const next=appScope.moduleStamp(chat[index]);
       return Object.keys(old).every(key=>old[key]===next[key]);
     }))return false;
-    if(reason==='CHAT_CHANGED'||!appScope.sourcePrefixVerified)return true;
+    if(reason==='CHAT_CHANGED')return true;
+    if(!appScope.sourcePrefixVerified&&(reason!=='MESSAGE_UPDATED'||chat.length<baseline.length))return true;
     const persona=appScope.state.dynamicPersona??{};
     const ends=[appScope.core.sourceEndIndex,...appScope.state.batches.map(b=>b.endIndex),...(persona.batches??[]).map(b=>b.endIndex),...(persona.manualPlan?.items??[]).map(b=>b.endIndex),...(persona.profiles??[]).map(p=>p.through)];
     if(!Number.isInteger(ends[0]))return true;
