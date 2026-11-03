@@ -44,7 +44,7 @@ export const APPLICATION_SERVICE_CONTRACTS = Object.freeze({
   }),
   automatic: Object.freeze({
     provides: Object.freeze(["validAutomaticBatches","automaticPlan","syncAutoStartFloor","inspectAutomaticProgress","setAutoStartFloor","setAutomatic","queueAutomaticSummary","wakeAutomaticSummary","autoSummary"]),
-    requires: Object.freeze(["apiConnectionReady","assertCurrent","begin","currentMemoryMutation","open","prepareSummaryChat","refresh","reportError","retryBatch","saveSettings","setMessage","settledHistoryTail","summarize","summaryFeedback","syncModulesQuietly"]),
+    requires: Object.freeze(["apiConnectionReady","assertCurrent","begin","currentMemoryMutation","localPersonaHistoryState","open","prepareSummaryChat","refresh","reportError","retryBatch","saveSettings","setMessage","settledHistoryTail","summarize","summaryFeedback","syncModulesQuietly"]),
     reads: Object.freeze(["active","autoFailureCount","autoFailureRange","autoHistoryAttempts","autoHistoryMessageId","autoHistorySource","autoInvalidSources","autoPending","autoRetryAt","autoRunOwner","autoRunning","autoTask","autoTaskOwner","autoTimer","automaticPaused","bindings","boundRefKey","cancelVersion","core","disposed","enabled","epoch","feedbackSequence","followPending","following","host","notify","opening","runtimeLog","state","workspace"]),
     writes: Object.freeze(["autoFailureCount","autoFailureRange","autoHistoryAttempts","autoHistoryMessageId","autoHistorySource","autoPending","autoRetryAt","autoRunOwner","autoRunning","autoTask","autoTaskOwner","autoTimer","automaticPaused"])
   }),

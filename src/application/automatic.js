@@ -11,7 +11,7 @@ import { failureText } from '../product-feedback.js';
 export function createAutomaticService(appScope) {
 function validAutomaticBatches(){return appScope.state.batches.filter(b=>!Object.values(b.records??{}).flat().some(r=>r.sourceRefs?.some(ref=>appScope.autoInvalidSources.has(sourceKey(ref)))));}
 
-function automaticPlan(){return autoSummaryPlan(validAutomaticBatches(),{advanceFromLatest:true,startFloor:appScope.state.autoStartFloor??1,originFloor:appScope.state.autoOriginFloor,batchSize:appScope.core.settings.autoSummaryEvery,keepRecent:appScope.core.settings.autoKeepRecent,lastIndex:appScope.state.autoLastIndex??null});}
+function automaticPlan(lastIndex=appScope.state.autoLastIndex??null){return autoSummaryPlan(validAutomaticBatches(),{advanceFromLatest:true,startFloor:appScope.state.autoStartFloor??1,originFloor:appScope.state.autoOriginFloor,batchSize:appScope.core.settings.autoSummaryEvery,keepRecent:appScope.core.settings.autoKeepRecent,lastIndex});}
 
 async function syncAutoStartFloor(diagnosticRun,{check=()=>{},resumeAfterDeletion=false}={}){
     check();
@@ -92,6 +92,12 @@ function wakeAutomaticSummary(){
       if(token!==appScope.epoch||version!==appScope.cancelVersion||appScope.disposed){appScope.autoPending=false;return;}
       if(appScope.active||appScope.opening||appScope.followPending||appScope.following||appScope.state.stale||appScope.currentMemoryMutation()||summaryHeld()||unfinishedManualSummary())return;
       appScope.autoPending=false;
+      const local=appScope.localPersonaHistoryState();
+      if(local&&!automaticPlan(local.lastIndex).ready){
+        appScope.state.autoLastIndex=local.lastIndex;
+        appScope.notify();
+        return;
+      }
       const owner={token,version};appScope.autoTaskOwner=owner;
       const task=(async()=>{await appScope.syncModulesQuietly();if(appScope.autoTaskOwner===owner&&token===appScope.epoch&&version===appScope.cancelVersion&&!appScope.disposed)await autoSummary({owner});})()
         .catch(error=>{if(appScope.autoTaskOwner===owner&&token===appScope.epoch&&version===appScope.cancelVersion&&!appScope.disposed)void appScope.reportError(error,{task:'background',stage:'background'});})
