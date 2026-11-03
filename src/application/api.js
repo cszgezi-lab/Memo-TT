@@ -96,10 +96,17 @@ const application={previewSummary: appScope.previewSummary,splitSummaryBatch:(..
     async exportBackup(options={}){appScope.assertCurrent();const assistantLimit=Number.isFinite(options.assistantLimit)?Math.max(0,Math.floor(options.assistantLimit)):null;const assistant=assistantLimit==null?appScope.state.history:appScope.state.history.slice(-assistantLimit);return {kind:'shiyi-backup',version:1,scope:appScope.boundScope,modules:clone(appScope.state.modules),moduleSnapshots:clone(appScope.state.moduleSnapshots),eventMergeDecisions:clone(appScope.mergeDecisions),settings:persistedProductSettings(appScope.core.settings),memory:await appScope.core.readMemoryView(),documents:await Promise.all(appScope.state.documents.map(async d=>({...d,parts:await Promise.all(Array.from({length:d.chunks},(_,i)=>appScope.globalWorkspace.read(documentPartKey(d,i))))}))),assistant};},
     async dispose(){appScope.disposed=true;clearTimeout(appScope.stopForceTimer);appScope.stopForceTimer=null;appScope.host.document?.removeEventListener?.('visibilitychange',appScope.resumeAutomaticTasks);appScope.host.removeEventListener?.('online',appScope.resumeAutomaticTasks);await appScope.dynamicPersona.dispose();appScope.host.document?.removeEventListener?.('visibilitychange',appScope.resumeVectorMaintenance);appScope.host.removeEventListener?.('online',appScope.resumeVectorMaintenance);appScope.host.removeEventListener?.('offline',appScope.resumeVectorMaintenance);appScope.tracking=false;clearTimeout(appScope.followTimer);appScope.followTimer=null;appScope.followPending=false;for(const off of [...appScope.chatListeners.splice(0),...appScope.generationListeners.splice(0)]){try{await off();}catch{}}await appScope.disable();await appScope.injectionLog?.flush();appScope.epoch++;await appScope.core.dispose();appScope.stopRequestScheduler();appScope.stopTransportDiagnostics();appScope.stopErrorBoundary();for(const resolve of appScope.followWaiters.splice(0))resolve(appScope.publicState());await appScope.flushDiagnostics();await appScope.hostAdapter?.dispose?.();},
   };
+  for(const name of ['exportMemoryArchive','previewMemoryArchive'])application[name]=async archive=>{
+    const op=appScope.begin();try{return await appScope.core[name](...(name==='exportMemoryArchive'?[{check:op.check}]:[archive,{check:op.check}]));}finally{op.finish();}
+  };
+  application.importMemoryArchive=async(archive,{previewHash}={})=>{
+    const op=appScope.begin();let result;try{result=await appScope.core.importMemoryArchive(archive,{previewHash,check:op.check});}finally{op.finish();}
+    await appScope.open({enable:appScope.enabled,rebind:true});appScope.setMessage(`已继承 ${result.summaryBatches} 个总结批次、${result.personaBatches} 个人设批次；原聊天档案保留`);return result;
+  };
   application.deletePerson=appScope.deletePerson;
   application.readBatchRecords=id=>clone(appScope.state.batches.find(batch=>batch.id===id)?.records??{});
-  application.refresh=async(...args)=>{
-    const view=await appScope.refresh(...args);
+  application.refresh=async(options={})=>{
+    const view=await appScope.refresh({...options,recheckSources:true});
     // Internal owned projections share unchanged rows. External consumers get
     // isolated fields when requested, without an unused full clone on a click.
     return lazyViewState(Object.fromEntries(Object.keys(view??{}).map(key=>[key,()=>clone(view[key])])));

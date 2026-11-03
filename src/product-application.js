@@ -293,7 +293,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   const resumeAutomaticTasks=()=>{if(host.document?.visibilityState==='hidden')return;queueAutomaticSummary();dynamicPersona.wake();};
   host.document?.addEventListener?.('visibilitychange',resumeAutomaticTasks);host.addEventListener?.('online',resumeAutomaticTasks);
 
-  const memoryMutationKey=()=>boundScope?stableStringify(boundScope):null;
+  const memoryMutationKey=()=>boundScope?stableStringify([boundRefKey,boundScope]):null;
   
   const pendingMemoryMutation=()=>Object.assign(new Error('记忆删除或恢复的存储结果尚未确认，请稍后刷新重试'),{code:'PERSISTENCE_ERROR',details:{reason:'storage_write',storageStage:'unknown',storageArtifact:'memory',operationPending:true,modelRequested:false}});
 

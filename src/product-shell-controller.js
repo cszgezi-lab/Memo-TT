@@ -1,4 +1,6 @@
 import {summaryPresetFromRules} from './summary-presets.js';
+import {resolveArchiveSession,exportMemoryArchive,previewMemoryArchive,importMemoryArchive} from './memory-archive.js';
+import {createWorkspace} from './product-workspace.js';
 import {readCachedFailureResponses} from './summary-response-evidence.js';
 import { normalizeInnerLife } from './character-journal.js';
 import {
@@ -14,7 +16,7 @@ import { SummaryEngine } from './summary-engine.js';
 import { HostAdapter } from './host-adapter.js';
 import { productFailure } from './product-feedback.js';
 import { safeLogDetails } from './product-runtime-log.js';
-import { verifyProductSources } from './product-sources.js';
+import { verifyProductSources,sourceKey } from './product-sources.js';
 import { makeId, clone, stableStringify, sha256, estimateUnits } from './utils.js';
 import { lazyViewState } from './product-view-scheduling.js';
 import {
@@ -259,7 +261,10 @@ export function createProductShellController({
     return failures.length;
   }
 
+  const sourceEvidence=new Map();let sourceEvidenceCount=null;
+  function clearSourceEvidence(){sourceEvidence.clear();sourceEvidenceCount=null;}
   function invalidate(reason = 'MESSAGE_UPDATED', code = 'SOURCE_INVALIDATED') {
+    clearSourceEvidence();
     generation += 1;
     bindingGeneration += 1;
     if (abortController && !abortController.signal.aborted) abortController.abort(reason);
@@ -371,6 +376,7 @@ export function createProductShellController({
   }
 
   async function bindCurrentChat(options = {}) {
+    clearSourceEvidence();
     if (destroyed) return { status: PRODUCT_SHELL_STATUS.FAILED, errorCode: 'HOST_CONTRACT_INVALID' };
     if (bindingPromise) return bindingPromise;
     const pending = (async () => {
@@ -381,7 +387,7 @@ export function createProductShellController({
         try {
           adapterInstance ??= adapterFactory(host);
           const currentRef = await adapterInstance.currentRef();
-          if (matchesExpected(currentRef) && state.session.refKey === stableStringify(currentRef) && state.status !== PRODUCT_SHELL_STATUS.INVALIDATED) return { status: 'ready', identityReady: true, persistence: repository ? 'available' : 'unavailable' };
+          if (!options.rebind && matchesExpected(currentRef) && state.session.refKey === stableStringify(currentRef) && state.status !== PRODUCT_SHELL_STATUS.INVALIDATED) return { status: 'ready', identityReady: true, persistence: repository ? 'available' : 'unavailable' };
         } catch { /* continue with a fresh explicit bind */ }
         await removeSubscriptions();
         invalidate('CHAT_CHANGED', 'CHAT_CHANGED');
@@ -402,9 +408,10 @@ export function createProductShellController({
       }
       adapterInstance ??= adapterFactory(host);
       try {
-        const session = await captureProductHostSession(adapterInstance, { accountId: options.accountId ?? accountId, branchId: options.branchId ?? branchId });
+        let session = await captureProductHostSession(adapterInstance, { accountId: options.accountId ?? accountId, branchId: options.branchId ?? branchId });
         if(!matchesExpected(session.ref))throw Object.assign(new Error('聊天已切换'),{code:'CHAT_CHANGED'});
-        await adapterInstance.prepareLegacyMemory?.(session,{signal:options.signal,check:options.check});
+        if(adapterInstance.getStore)session=await resolveArchiveSession(session,await adapterInstance.getStore({scope:'extension'}));
+        if(!session.archive)await adapterInstance.prepareLegacyMemory?.(session,{signal:options.signal,check:options.check});
         if(!matchesExpected(session.ref))throw Object.assign(new Error('聊天已切换'),{code:'CHAT_CHANGED'});
         state.session = session;
         state.scope = clone(session.scope);
@@ -852,10 +859,18 @@ export function createProductShellController({
     });
   }
 
-  async function sourceValidity(records,options) {
+  async function sourceValidity(records,{includeMessages=false,reuseVerified=false}={}) {
     if (!state.session) throw new Error('聊天未打开');
     const session = state.session, token = currentToken();
-    return verifyProductSources(session.handle.history, records, () => { if (!tokenValid(token, session)) throw new Error('聊天已变化'); },options);
+    if(!reuseVerified)clearSourceEvidence();
+    const refs=[...new Map(Object.values(records??{}).filter(Array.isArray).flatMap(rows=>rows.flatMap(r=>r?.sourceRefs??[])).map(r=>[sourceKey(r),r])).values()];
+    const pending=refs.filter(r=>!sourceEvidence.has(sourceKey(r))),cachedSources=refs.length-pending.length;
+    const fresh=await verifyProductSources(session.handle.history,{pending:[{sourceRefs:pending}]},()=>{if(!tokenValid(token,session))throw new Error('聊天已变化');},{includeMessages:true,pageLimit:cachedSources?Math.max(32,pending.length):500});
+    if(fresh.totalCount!==null)sourceEvidenceCount=fresh.totalCount;
+    const messages=new Map(fresh.messages.map(m=>[sourceKey({sourceId:m.id,hash:m.hash,version:m.version}),m]));
+    for(const key of fresh.validKeys)sourceEvidence.set(key,messages.get(key)??null);
+    const validKeys=refs.map(sourceKey).filter(key=>sourceEvidence.has(key));
+    return {...fresh,validKeys,totalCount:sourceEvidenceCount,readStats:{...fresh.readStats,cachedSources},messages:includeMessages?validKeys.map(k=>sourceEvidence.get(k)).filter(Boolean).map(clone):undefined};
   }
 
   async function dispose() {
@@ -869,6 +884,29 @@ export function createProductShellController({
   }
 
   const controller = {
+    get archive(){return clone(state.session?.archive??null);},
+    matchesLiveSource(message,raw){
+      if(!raw)return false;const current=state.session?.canonicalMessage?.(raw,message.index)??raw;
+      return String(current.text??current.mes??current.content??'')===message.text&&(current.version??current.swipeId??current.swipe_id??0)===message.version&&(!(current.id??current.messageId??current.uuid??current.sourceId)||(current.id??current.messageId??current.uuid??current.sourceId)===message.id);
+    },
+    async exportMemoryArchive({check:callerCheck=()=>{}}={}){
+      if(!state.session||activeTask)throw new Error('请先打开聊天并等待任务结束');const session=state.session,token=currentToken();
+      const check=async()=>{callerCheck();if(!tokenValid(token,session)||stableStringify(await adapterInstance.currentRef())!==session.refKey)throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});};
+      return exportMemoryArchive({session,store:sessionStore,cleanMessages,check});
+    },
+    async previewMemoryArchive(archive,{check:callerCheck=()=>{}}={}){
+      if(!state.session||activeTask)throw new Error('请先打开聊天并等待任务结束');const session=state.session,token=currentToken();
+      const check=async()=>{callerCheck();if(!tokenValid(token,session)||stableStringify(await adapterInstance.currentRef())!==session.refKey)throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});};
+      const {_sources,...plan}=await previewMemoryArchive({archive,session,check});return plan;
+    },
+    async importMemoryArchive(archive,{previewHash,check:callerCheck=()=>{}}={}){
+      if(!state.session||activeTask)throw new Error('请先打开聊天并等待任务结束');const session=state.session,token=currentToken();
+      const check=async()=>{callerCheck();if(!tokenValid(token,session)||stableStringify(await adapterInstance.currentRef())!==session.refKey)throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});};
+      const assertEmpty=async()=>{const existing=await repository.readScope(session.scope),workspace=createWorkspace({store:sessionStore,scope:session.scope,isCurrent:()=>tokenValid(token,session)}),persona=await workspace.read('dynamic-persona'),batches=await workspace.read('summary-batches',[]);await check();
+        if(existing.committedRevision>0||batches.length||persona?.profiles?.length||persona?.batches?.length||persona?.manualPlan||persona?.batchRemoval)throw new Error('当前聊天已有记忆或人物档案，请在新的分支聊天导入；已有成果保留');};
+      await assertEmpty();
+      const {_sources,...result}=await importMemoryArchive({archive,session,global:await adapterInstance.getStore({scope:'extension'}),previewHash,check,beforeActivate:assertEmpty});return result;
+    },
     async readQualitySources(records){
       if(!state.session)throw Object.assign(new Error('请先打开聊天'),{code:'CHAT_REF_UNAVAILABLE'});
       const session=state.session,token=currentToken();

@@ -42,7 +42,7 @@ async function listVectorEntries({query='',page=1,status='all'}={}){
     return {rows:rows.slice((current-1)*20,current*20),total:rows.length,page:current,pages};
   }
 
-function canMaintainVectors(){return !appScope.disposed&&appScope.enabled&&!appScope.vectorStopped&&!appScope.recallReaders&&!appScope.foregroundBusy()&&appScope.workspace?.isCurrent()&&!appScope.state.stale&&appScope.core.settings.vectorEnabled&&(appScope.core.settings.vectorAutoUpdate||appScope.state.batches.some(b=>b.status==='saved'&&b.autoIndex))&&appScope.host.document?.visibilityState!=='hidden'&&appScope.host.navigator?.onLine!==false;}
+function canMaintainVectors(){return !appScope.state.sourceStatus?.pending&&!appScope.disposed&&appScope.enabled&&!appScope.vectorStopped&&!appScope.recallReaders&&!appScope.foregroundBusy()&&appScope.workspace?.isCurrent()&&!appScope.state.stale&&appScope.core.settings.vectorEnabled&&(appScope.core.settings.vectorAutoUpdate||appScope.state.batches.some(b=>b.status==='saved'&&b.autoIndex))&&appScope.host.document?.visibilityState!=='hidden'&&appScope.host.navigator?.onLine!==false;}
 
 function wakeVectors(){
     if(!canMaintainVectors()||appScope.vectorTimer||appScope.vectorJob||appScope.active||appScope.recallBusy)return;

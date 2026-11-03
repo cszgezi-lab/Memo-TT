@@ -36,7 +36,7 @@ async function migrateWorkspace(){
     await appScope.globalWorkspace.write('legacy-imported',{at:Date.now()});
   }
 
-async function refresh({boundOnly=false,summaryCommit=false,bookkeepingOnly=false,check:parentCheck,view:reusableView}={}) {
+async function refresh({savedOnly=false,recheckSources=false,boundOnly=false,summaryCommit=false,bookkeepingOnly=false,check:parentCheck,view:reusableView}={}) {
     parentCheck?.();
     if(appScope.tracking&&!boundOnly&&(!appScope.workspace?.isCurrent()||appScope.state.stale)){await appScope.followCurrentChat();parentCheck?.();if(!appScope.workspace?.isCurrent())throw Object.assign(new Error('当前没有可读取的聊天'),{code:'CHAT_REF_UNAVAILABLE'});return;}
     const mutationKey=appScope.memoryMutationKey(),mutation=appScope.memoryMutationGuards.get(mutationKey),mutationRevision=mutation?.revision;
@@ -51,12 +51,12 @@ async function refresh({boundOnly=false,summaryCommit=false,bookkeepingOnly=fals
       if(mutation)appScope.memoryMutationGuards.delete(mutationKey);
       appScope.notify();return view;
     }
-    const validity = await appScope.core.sourceValidity(view.records ?? {},{includeMessages:true});
+    const validity = savedOnly ? {validKeys:Object.values(view.records??{}).filter(Array.isArray).flatMap(rows=>rows.flatMap(r=>(r.sourceRefs??[]).map(sourceKey))),invalidKeys:[],unknownKeys:[],totalCount:null,readStats:{savedOnly:true}} : await appScope.core.sourceValidity(view.records ?? {},{includeMessages:true,reuseVerified:!recheckSources});
     check();
     const liveChat=mvuContext(appScope.host)?.chat;
-    appScope.sourcePrefixVerified=validity.totalCount===null&&!appScope.sourceEventRelevant('SOURCE_REFRESH')||Array.isArray(liveChat)&&liveChat.length===validity.totalCount&&!validity.invalidKeys.length&&!validity.unknownKeys.length&&(validity.messages??[]).every(m=>{
-      const raw=liveChat[m.index];return raw&&String(raw.text??raw.mes??raw.content??'')===m.text&&(raw.version??raw.swipeId??raw.swipe_id??0)===m.version&&(!(raw.id??raw.messageId??raw.uuid??raw.sourceId)||(raw.id??raw.messageId??raw.uuid??raw.sourceId)===m.id);
-    });
+    appScope.sourcePrefixVerified=!savedOnly&&(validity.totalCount===null&&!appScope.sourceEventRelevant('SOURCE_REFRESH')||Array.isArray(liveChat)&&liveChat.length===validity.totalCount&&!validity.invalidKeys.length&&!validity.unknownKeys.length&&(validity.messages??[]).every(m=>{
+      return appScope.core.matchesLiveSource(m,liveChat[m.index]);
+    }));
     appScope.runtimeLog.record({task:'background',phase:'reading',details:{stage:'prepare',...validity.readStats}});
     const valid = new Set(validity.validKeys);
     const filtered = Object.fromEntries(Object.entries(view.records ?? {}).map(([key, records]) => [key, Array.isArray(records) ? records.filter(record => (record.sourceRefs ?? []).every(ref => valid.has(sourceKey(ref)))) : records]));
@@ -87,7 +87,7 @@ async function refresh({boundOnly=false,summaryCommit=false,bookkeepingOnly=fals
     const nextCards=new Map(appScope.state.cards.map(card=>[card.id,card]));
     const additive=summaryCommit&&appScope.committedRecall&&appScope.committedRecall.memoryCards.every(card=>stableStringify(card)===stableStringify(nextCards.get(card.id)));
     appScope.recallChanged({publicationOnly:Boolean(additive)});
-    appScope.state.sourceStatus = {invalid:validity.invalidKeys.length,unknown:validity.unknownKeys.length};
+    appScope.state.sourceStatus = {invalid:validity.invalidKeys.length,unknown:validity.unknownKeys.length,pending:savedOnly};
     appScope.autoInvalidSources=new Set([...validity.invalidKeys,...validity.unknownKeys]);
     const docs = await appScope.globalWorkspace.read('documents', []);check();
     appScope.state.documents = docs; await appScope.warmRecall();check();

@@ -93,6 +93,7 @@ async function inject(payload,{dossierPeople=[],dossierProfiles=[],personaInject
     if(!appScope.enabled||!appScope.core.settings.injectionEnabled){appScope.injectedPayloads.add(payload);audit('disabled');return;}
     if(appScope.state.stale||!appScope.workspace?.isCurrent()){appScope.injectedPayloads.add(payload);audit(appScope.state.stale?'stale':'unavailable');return;}
     if(appScope.currentMemoryMutation()){appScope.injectedPayloads.add(payload);audit('changed');return;}
+    if(appScope.state.sourceStatus?.pending)await appScope.refresh({boundOnly:true});
     appScope.injectedPayloads.add(payload);
     await appScope.syncModulesQuietly();
     preparation.mark('syncMs');

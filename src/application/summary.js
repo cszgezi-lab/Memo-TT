@@ -17,9 +17,10 @@ async function prepareSummaryChat(){
     let target;try{target=await appScope.hostAdapter.currentRef();}catch{throw Object.assign(new Error('无法读取 TT 当前聊天'),{code:'CHAT_REF_UNAVAILABLE'});}
     if(version!==appScope.cancelVersion)throw Object.assign(new Error('任务已停止'),{code:'CANCELED'});
     if(!target)throw Object.assign(new Error('TT 当前没有打开聊天'),{code:'CHAT_REF_UNAVAILABLE'});
-    if(appScope.workspace?.isCurrent()&&!appScope.state.stale&&appScope.boundRefKey===stableStringify(target))return;
+    if(appScope.workspace?.isCurrent()&&!appScope.state.stale&&appScope.boundRefKey===stableStringify(target)){if(appScope.state.sourceStatus?.pending)await appScope.refresh({boundOnly:true});return;}
     appScope.summaryFeedback('running','正在读取 TT 当前聊天…','manual');
     await appScope.open({enable:appScope.enabled,expectedRef:target});
+    if(appScope.state.sourceStatus?.pending)await appScope.refresh({boundOnly:true});
   }
 
 async function previewSummary(options={}){

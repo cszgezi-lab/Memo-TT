@@ -191,7 +191,7 @@ function invalidate(reason) {
     clearPrompt(); appScope.state.status = appScope.tracking?'loading':'stale'; appScope.setMessage(appScope.tracking?'正在加载当前聊天的记忆和总结批次…':reason === 'CHAT_CHANGED' ? '聊天已切换；开始总结时会自动读取当前聊天' : '正文已修改，旧记忆已暂停注入；重新整理相关范围后恢复');
   }
 
-async function open({enable = true, expectedRef, passive=false} = {}) {
+async function open({enable = true, expectedRef, passive=false,rebind=false} = {}) {
     if (appScope.active || appScope.opening) throw new Error('请先停止当前任务');
     appScope.opening = true;appScope.vectorStopped=false;
     const opener=new AbortController(), version=appScope.cancelVersion;
@@ -208,10 +208,10 @@ async function open({enable = true, expectedRef, passive=false} = {}) {
     await stopListeners(); checkOpen(); await clearPrompt(); checkOpen();
     appScope.hostAdapter ??= new HostAdapter(appScope.host);
     appScope.workspace=null;appScope.boundScope=null;appScope.boundRefKey=null;appScope.state.cards=[];appScope.state.records={};appScope.state.batches=[];appScope.state.deletedRecords=[];appScope.state.progress='';appScope.modules.clear();appScope.state.status='loading';appScope.notify();
-    const result = await appScope.core.bindCurrentChat({expectedRef:target,signal:opener.signal,check:checkOpen});
+    const result = await appScope.core.bindCurrentChat({rebind,expectedRef:target,signal:opener.signal,check:checkOpen});
     await checkTarget();
     if (result.status !== 'ready' || result.persistence !== 'available') throw Object.assign(new Error((appScope.core.readViewState?.()??appScope.core.state).errorMessage ?? '当前聊天尚未保存或宿主存储不可用'),{code:result.errorCode??'PERSISTENCE_UNAVAILABLE'});
-    if(passive&&appScope.sourceContextComplete)await settledHistoryTail();checkOpen();
+    checkOpen();
     appScope.epoch++; appScope.knowledgeCache = []; appScope.recallChanged({ clear: true });
     appScope.workspace = createWorkspace(appScope.core.workspace());
     {const current=appScope.workspace;appScope.injectionLog=createInjectionLog({workspace:current,onChange:()=>{if(appScope.workspace===current)appScope.notify();}});await appScope.injectionLog.load();checkOpen();}
@@ -228,9 +228,9 @@ async function open({enable = true, expectedRef, passive=false} = {}) {
     for (const name of ['CHAT_CHANGED','MESSAGE_EDITED','MESSAGE_UPDATED','MESSAGE_SWIPED','MESSAGE_DELETED','MESSAGE_SWIPE_DELETED']) {
       try { appScope.bindings.push(appScope.hostAdapter.subscribe(name, async () => {if(appScope.tracking)return;if(name==='MESSAGE_UPDATED'&&moduleMetadataOnly()){await appScope.syncModulesQuietly();return;}if(!sourceEventRelevant(name)){rememberModuleSources();appScope.queueAutomaticSummary();appScope.dynamicPersona.wake();return;}invalidate(name);})); } catch { /* no automatic activation without final hook */ }
     }
-    appScope.state.status = 'ready';rememberModuleSources(); await appScope.refresh({boundOnly:true}); checkOpen();
+    appScope.state.status = 'ready';rememberModuleSources(); await appScope.refresh({boundOnly:true,savedOnly:true}); checkOpen();
     try{await appScope.syncAutoStartFloor();}catch(error){void appScope.reportError(error,{task:'summary',stage:'auto_start_floor'});}checkOpen();
-    try{await appScope.dynamicPersona.load();}catch(error){void appScope.reportError(error,{task:'persona',stage:'prepare'});appScope.state.dynamicPersona={...appScope.dynamicPersona.state,message:appScope.dynamicPersona.state.message||failureText(error)};}checkOpen();
+    try{await appScope.dynamicPersona.load({savedOnly:true});}catch(error){void appScope.reportError(error,{task:'persona',stage:'prepare'});appScope.state.dynamicPersona={...appScope.dynamicPersona.state,message:appScope.dynamicPersona.state.message||failureText(error)};}checkOpen();
     // An empty workspace has no protected sources yet; establish full-window
     // alignment from the native tail count, without scanning unrelated bodies.
     if(!appScope.state.batches.length&&!appScope.state.dynamicPersona?.batches?.length&&!appScope.state.dynamicPersona?.manualPlan&&appScope.core.sourceEndIndex===-1&&appScope.moduleSourceBaseline?.length===appScope.state.autoLastIndex+1)appScope.sourcePrefixVerified=true;
@@ -241,7 +241,8 @@ async function open({enable = true, expectedRef, passive=false} = {}) {
       // Otherwise a reply finishing during open() leaves foreground latched forever.
       const cardPromptManager=await personaPromptManager();checkOpen();
       if(cardPromptManager)appScope.bindings.push(appScope.personaWorldbook.attachPromptManager(cardPromptManager));
-      try{appScope.bindings.push(appScope.hostAdapter.subscribe('CHAT_COMPLETION_PROMPT_READY',payload=>{
+      try{appScope.bindings.push(appScope.hostAdapter.subscribe('CHAT_COMPLETION_PROMPT_READY',async payload=>{
+        if(appScope.enabled&&appScope.core.settings.dynamicPersonaEnabled)await appScope.dynamicPersona.ensureSources();
         appScope.personaWorldbook.applyCardPrompt(payload,appScope.enabled&&appScope.core.settings.dynamicPersonaEnabled&&!auxiliaryInjectionReason({messages:payload?.chat})?appScope.dynamicPersona.profiles():[]);
       }));}catch{/* Original card remains when the host has no structured prompt event. */}
       appScope.bindings.push(appScope.hostAdapter.subscribe('CHAT_COMPLETION_SETTINGS_READY', async payload => {
@@ -259,6 +260,7 @@ async function open({enable = true, expectedRef, passive=false} = {}) {
         // not put either the new chat's recall or persona in that old payload.
         if(appScope.personaWorldbook.foreignRequest(payload)){await appScope.personaWorldbook.finalize(payload,[]);return;}
         const requestEpoch=appScope.epoch;
+        if(appScope.state.sourceStatus?.pending)await appScope.refresh({boundOnly:true});
         let sourceMessages=[];try{sourceMessages=await appScope.core.sceneMessages?.()??[];}catch{/* Use assembled request when the source is unavailable. */}
         const recallQuery=sceneRecallQuery(payload.messages,sourceMessages);
         // Persona selection still needs present actors from the recent scene,
@@ -274,7 +276,7 @@ async function open({enable = true, expectedRef, passive=false} = {}) {
         await appScope.inject(payload,{dossierPeople:personaInjection?.people??[],dossierProfiles:personaInjection?.profiles??[],personaInjection,preparation,recallQuery,sceneMessages:sourceMessages});
         }finally{preparation.finish();appScope.injecting--;appScope.providerScheduler.setForeground?.(appScope.foregroundBusy());if(!appScope.foregroundBusy()){wakeChatFollower();appScope.queueAutomaticSummary();appScope.dynamicPersona.wake();}}
       }));
-      try{appScope.bindings.push(appScope.hostAdapter.subscribe('WORLDINFO_ENTRIES_LOADED',payload=>appScope.enabled?appScope.personaWorldbook.applyLoaded(payload,appScope.dynamicPersona.profiles()).catch(error=>{void appScope.reportError(error,{task:'persona',stage:'prepare'});}):undefined));}catch{/* Optional capability must not disable automatic summary. */}
+      try{appScope.bindings.push(appScope.hostAdapter.subscribe('WORLDINFO_ENTRIES_LOADED',async payload=>{if(!appScope.enabled)return;try{await appScope.dynamicPersona.ensureSources();await appScope.personaWorldbook.applyLoaded(payload,appScope.dynamicPersona.profiles());}catch(error){void appScope.reportError(error,{task:'persona',stage:'prepare'});}}));}catch{/* Optional capability must not disable automatic summary. */}
       // TT awaits event listeners. Never attach the model's lifetime to the
       // reply-render/save event; coalesce notifications into one background job.
       appScope.bindings.push(appScope.hostAdapter.subscribe('MESSAGE_RECEIVED',messageId=>{void Promise.resolve().then(appScope.syncModulesQuietly);appScope.queueAutomaticSummary(messageId);appScope.dynamicPersona.wake();}));

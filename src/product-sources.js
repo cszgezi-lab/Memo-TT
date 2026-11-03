@@ -3,7 +3,7 @@ import { normalizeHostMessage } from './product-host-adapters.js';
 export const sourceKey = ref => JSON.stringify([ref?.sourceId, ref?.version ?? null, ref?.hash ?? null]);
 
 /** Verify raw bodies, including UUID messages. Unread evidence is unknown, never valid. */
-export async function verifyProductSources(history, records, check = () => {}, {includeMessages=false}={}) {
+export async function verifyProductSources(history, records, check = () => {}, {includeMessages=false,pageLimit=500}={}) {
   const started=Date.now();let historyPages=0,fetchedMessages=0,normalizedMessages=0;
   let nextYield=Date.now()+8;
   const refs = [...new Map(Object.values(records ?? {}).filter(Array.isArray).flatMap(list => list.flatMap(r => r?.sourceRefs ?? [])).map(r => [sourceKey(r), r])).values()];
@@ -13,7 +13,8 @@ export async function verifyProductSources(history, records, check = () => {}, {
   const wantedIndices=new Set(pending.flatMap(r=>{const m=/^message:(\d+):/.exec(r.sourceId);return m?[Number(m[1])]:[];}));
   let complete = false, total = null;
   if (pending.length) {
-    let page = await history.tail({ limit: 500 }); check();
+    const limit=Math.max(1,Math.min(500,pageLimit));
+    let page = await history.tail({ limit }); check();
     for (let n = 0; n < 10000; n++) {
       if (!page || !Array.isArray(page.messages) || !Number.isInteger(page.startIndex) || page.startIndex < 0) break;
       if (total === null) total = page.totalCount ?? page.startIndex + page.messages.length;
@@ -34,7 +35,7 @@ export async function verifyProductSources(history, records, check = () => {}, {
       if (page.startIndex === 0) { complete = true; break; }
       const unresolved = pending.some(r => { const match = /^message:(\d+):/.exec(r.sourceId); return match ? Number(match[1]) < total && !byIndex.has(Number(match[1])) : !current.has(r.sourceId); });
       if (!unresolved || typeof history.before !== 'function') break;
-      const older = await history.before(page, { limit: 500 }); check();
+      const older = await history.before(page, { limit }); check();
       if (!older || !Array.isArray(older.messages) || !Number.isInteger(older.startIndex) || older.startIndex >= page.startIndex || older.startIndex + older.messages.length !== page.startIndex) break;
       page = older;
     }

@@ -1,3 +1,4 @@
+import {mountMemoryArchive} from './product-memory-archive.js';
 import { createProductApplication } from '../src/product-application.js';
 import {dynamicPersonaHTML,mountDynamicPersona} from './product-dynamic-persona.js';
 import { characterJournalHTML,mountCharacterJournal } from './product-character-journal.js';
@@ -883,6 +884,7 @@ $('[data-memory-page]')?.addEventListener('change',()=>{memoryCurrentPage=Math.m
    if(kind==='dynamic-persona'){setPage(profileId?'persona-profiles':'dynamic-persona');dynamicPersonaView.focus?.(profileId??name);return;}
    setPage(kind);journalView.selectPerson?.(kind,name);
  }});
+ const memoryArchive=mountMemoryArchive({panel,app,run,download});
  extractionView=mountExtractionView({panel,app,run,host:uiHost,download});
  const tagSettings=$('[data-tag-settings]');
  const paintOpenedTags=()=>{if(tagSettings?.open)extractionView?.paint(readViewState(app));};
@@ -893,5 +895,5 @@ $('[data-memory-page]')?.addEventListener('change',()=>{memoryCurrentPage=Math.m
  let destroyed=false;
  Promise.resolve(app.loadApiSettings?.()).then(()=>{if(!destroyed){fill({apiOnly:true});paint(readViewState(app));return app.startChatTracking?.();}}).catch(e=>{if(!destroyed)feedback(`读取全局配置失败：${failureText(e)}`,'error');});
  return {panel,application:app,controller:controller??app.core,setPage,floating,openMemoryRecord,
-   async destroy(){destroyed=true;peopleView?.dispose?.();confirmation.dispose();tagSettings?.removeEventListener('toggle',paintOpenedTags);memoryDictionary?.removeEventListener('toggle',paintMemoryDictionary);homeTaskCenter.removeEventListener('toggle',paintHomeTasks);for(const menu of workflowMenus)menu.removeEventListener('toggle',paintHomeTasks);updateSettings.removeEventListener('toggle',paintUpdateSettings);painting.dispose();clearTimeout(timer);resetAllModels();floating.destroy();await app.dispose?.();}};
+   async destroy(){destroyed=true;memoryArchive.dispose();peopleView?.dispose?.();confirmation.dispose();tagSettings?.removeEventListener('toggle',paintOpenedTags);memoryDictionary?.removeEventListener('toggle',paintMemoryDictionary);homeTaskCenter.removeEventListener('toggle',paintHomeTasks);for(const menu of workflowMenus)menu.removeEventListener('toggle',paintHomeTasks);updateSettings.removeEventListener('toggle',paintUpdateSettings);painting.dispose();clearTimeout(timer);resetAllModels();floating.destroy();await app.dispose?.();}};
 }
