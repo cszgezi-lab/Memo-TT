@@ -33,9 +33,20 @@ export function numberedSummaryBatches(batches){
 
 // A range is one logical batch. Immutable generations stay in the repository;
 // only the effective generation changes. Never prefer an unfinished attempt.
+function summaryBatchRangeKey(row){return !row.replacement&&!row.replacedBy&&Number.isInteger(row.startIndex)&&Number.isInteger(row.endIndex)?`${row.startIndex}:${row.endIndex}`:row.id;}
+
+export function hasDuplicateSummaryBatchRanges(rows){
+  const seen=new Set();
+  return rows.some(row=>{
+    const key=summaryBatchRangeKey(row);
+    if(seen.has(key))return true;
+    seen.add(key);
+    return false;
+  });
+}
 export function consolidateSummaryBatches(rows,controls={}){
   const groups=new Map(),retire={};
-  for(const row of rows){const key=!row.replacement&&!row.replacedBy&&Number.isInteger(row.startIndex)&&Number.isInteger(row.endIndex)?`${row.startIndex}:${row.endIndex}`:row.id;const group=groups.get(key)??[];group.push(row);groups.set(key,group);}
+  for(const row of rows){const key=summaryBatchRangeKey(row);const group=groups.get(key)??[];group.push(row);groups.set(key,group);}
   const result=[];
   for(const group of groups.values()){
     if(group.length===1){result.push(group[0]);continue;}

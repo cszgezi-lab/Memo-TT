@@ -1,7 +1,7 @@
 import { documentPartKey } from '../product-workspace.js';
 import { mvuContext } from '../product-custom-modules.js';
 import { sourceKey } from '../product-sources.js';
-import { batchRecords, MEMORY_CATEGORIES, editedMemoryFields, consolidateSummaryBatches } from '../product-batches.js';
+import { batchRecords, MEMORY_CATEGORIES, editedMemoryFields, hasDuplicateSummaryBatchRanges, consolidateSummaryBatches } from '../product-batches.js';
 import { QUALITY_STORE_KEY, qualityStatus, qualityEntryCurrent, projectQualityRecords } from '../product-memory-quality.js';
 import { RETROSPECTIVE_STORE_KEY, projectRetrospectiveRecords } from '../product-memory-retrospective.js';
 import { retrospectiveEntries, retrospectiveState } from '../product-memory-retrospective-controller.js';
@@ -108,7 +108,9 @@ async function syncModulesQuietly(){
   }
 
 async function normalizeBatchRanges(){
-    const list=await appScope.workspace.read('summary-batches',[]),view=await appScope.core.readMemoryView();
+    const list=await appScope.workspace.read('summary-batches',[]);
+    if(!hasDuplicateSummaryBatchRanges(list))return;
+    const view=await appScope.core.readMemoryView();
     const consolidated=consolidateSummaryBatches(list,view.controls?.operations);
     if(!consolidated.removed)return;
     // Save a recovery copy before hiding duplicate generations. A failed write
