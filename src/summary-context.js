@@ -2,7 +2,7 @@ import { clone, estimateUnits, stableStringify, yieldLocalWork, throwIfAborted }
 import { iterateChineseTokens } from './retrieval.js';
 import { sourceTimeline } from './source-consistency.js';
 import {markMemoryStates} from './memory-current-state.js';
-import {explicitSubjectNames} from './product-person-profiles.js';
+import {explicitSubjectNames,numericFactProjection} from './product-person-profiles.js';
 import {foldName} from './name-fold.js';
 
 // Storage proofs stay in the repository. Model context needs exact identifiers,
@@ -56,7 +56,7 @@ function* summaryContextSteps(records, messages, {budgetUnits=6000, maxRecords=4
   for (const [category, rows] of Object.entries(records??{})) {
     if (!Array.isArray(rows) || ['history','summaryView','conflicts','coverage'].includes(category) || categories && !categories.includes(category)) continue;
     selected[category]=[];
-    for (const original of rows) {
+    for (const original of category==='entityFactChanges'?numericFactProjection(rows):rows) {
       yield;
       if(historical.has(original.id))continue;
       const record=summaryRecord(original);

@@ -6,6 +6,28 @@ export const factValue = record => Object.hasOwn(record,'to')?record.to:Object.h
 export const factSubject = record => record.entity??record.entityId;
 export const factKey = record => record.fieldKey??record.field??record.key;
 
+// Only explicit transaction fields participate. Balance/age/snapshot numbers
+// retain their normal replacement semantics. Stored evidence stays immutable.
+export function numericFactProjection(records){
+  const totals=new Map(),seen=new Set(),projected=new Map();let sequence=0;
+  const ordered=[...records].sort((a,b)=>Math.max(-1,...sourceFloors(a))-Math.max(-1,...sourceFloors(b)));
+  for(const r of ordered){
+    if(r.numericProjection||r.customModuleId||r.category&&r.category!=='entityFactChanges')continue;
+    const kind=/^(?:本次|当次|今日|当天|当日)(收入|支出)$/.exec(factKey(r)??'');
+    const amount=/^(\d{1,14})(?:\.(\d{1,2}))?\s*([^\d\s.,+-]+)$/.exec(String(factValue(r)??'').trim());
+    if(!kind||!amount||!factSubject(r)||!sourceFloors(r).length||['unknown','uncertain','rumor','inferred'].includes(r.epistemicStatus))continue;
+    const key=stableStringify([factSubject(r),kind[1],amount[3],r.account??null,r.scope??null]);
+    const duplicate=r.id?key+'\0'+r.id:null;if(duplicate&&seen.has(duplicate))continue;if(duplicate)seen.add(duplicate);
+    const cents=BigInt(amount[1])*100n+BigInt((amount[2]??'').padEnd(2,'0'));
+    const total=(totals.get(key)??0n)+cents;totals.set(key,total);
+    const value=(total/100n).toString()+(total%100n?'.'+(total%100n).toString().padStart(2,'0'):'')+amount[3];
+    const field='累计'+kind[1]+'（'+amount[3]+(r.account?'·'+r.account:'')+'）';
+    const description=`${factSubject(r)} · ${field}：${value}`;
+    projected.set(r,{...r,field,...(r.fieldKey?{fieldKey:field}:{}),to:value,...(r.category?{description,text:description,searchText:[description,r.searchText??''].join('\n')}:{}),numericProjection:true,numericStep:++sequence,numericOriginalValue:factValue(r)});
+  }
+  return records.map(r=>projected.get(r)??r);
+}
+
 // Older accepted records may name a person with a string, an explicit list or
 // an {id,name} reference. Do not let an internal ID hide a supplied name.
 export function explicitSubjectNames(value){
@@ -112,7 +134,7 @@ export function characterProfiles(cards=[]) {
   }
   for(const profile of profiles.values())for(const field of profile.fields){
     const latest=version=>Math.max(-1,...version.records.flatMap(sourceFloors));
-    field.versions.sort((a,b)=>latest(b)-latest(a));
+    field.versions.sort((a,b)=>latest(b)-latest(a)||Math.max(0,...b.records.map(r=>r.numericStep??0))-Math.max(0,...a.records.map(r=>r.numericStep??0)));
   }
   // A whole dossier ranks by its most important attribute, so one ★★★★★ fact lifts
   // the person instead of the card sinking as an unranked record in the list.
@@ -131,12 +153,12 @@ export function currentAttributeRecords(records){
   const current=[],older=[];
   const rank=record=>{
     const floors=sourceFloors(record);
-    return {floor:floors.length?Math.max(...floors):-1,from:typeof record.validFrom==='string'?record.validFrom:''};
+    return {floor:floors.length?Math.max(...floors):-1,from:typeof record.validFrom==='string'?record.validFrom:'',step:record.numericProjection?record.numericStep??0:0};
   };
   for(const rows of groups.values()){
-    const ordered=[...rows].sort((a,b)=>{const x=rank(a),y=rank(b);return y.floor-x.floor||y.from.localeCompare(x.from);});
+    const ordered=[...rows].sort((a,b)=>{const x=rank(a),y=rank(b);return y.floor-x.floor||y.from.localeCompare(x.from)||y.step-x.step;});
     const top=rank(ordered[0]),known=top.floor>=0||top.from!=='';
-    const kept=known?ordered.filter(record=>{const item=rank(record);return item.floor===top.floor&&item.from===top.from;}):ordered;
+    const kept=known?ordered.filter(record=>{const item=rank(record);return item.floor===top.floor&&item.from===top.from&&item.step===top.step;}):ordered;
     const keep=new Set(kept);
     for(const record of ordered)(keep.has(record)?current:older).push(record);
   }

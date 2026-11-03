@@ -8,6 +8,9 @@ import { validateProductPatch, validateProductEdit } from '../product-settings.j
 import { embeddingVectors } from '../product-vector-indexer.js';
 import { chatConnectionPayload, inspectChatConnection } from '../product-connection-probe.js';
 
+const summaryOnlyKeys=new Set(['providerEndpoint','providerModel','providerAuthMode','providerEndpointMode','summaryRequestMode','summaryStreaming','summaryDeadlineMs','deadlineMs','chatRequestsPerMinute','inputBudgetUnits','outputBudgetUnits','summaryPresets','recordingRules']);
+export const summaryIndependentSettings=settings=>Object.fromEntries(Object.entries(settings).filter(([key])=>!summaryOnlyKeys.has(key)));
+
 /** settings orchestration. Dependencies are limited by service-contracts.js. */
 export function createSettingsService(appScope) {
 const summaryPresets=createSummaryApiPresets({getStore:()=>appScope.globalStore()});
@@ -60,6 +63,7 @@ async function saveUi() {
   }
 
 async function saveSettings(patch) {
+    const before=appScope.core.settings;
     const valid=validateProductEdit(patch,appScope.core.settings);
     if(valid.personaReviewEnabled===false)appScope.dynamicPersona.interruptReview();
     if(valid.dynamicPersonaFactReviewEnabled===false)appScope.dynamicPersona.interruptFactReview();
@@ -73,7 +77,9 @@ async function saveSettings(patch) {
       readingMessage='标签已保存；下次总结和召回原文使用新规则。聊天原文和已有结果保留。';
       appScope.state.feedback={id:++appScope.feedbackSequence,kind:'chat',level:'success',text:readingMessage};
     }
-    appScope.queueAutomaticSummary();appScope.dynamicPersona.wake();
+    const changed=key=>Object.hasOwn(valid,key)&&JSON.stringify(before[key])!==JSON.stringify(valid[key]);
+    if(['autoSummaryEnabled','autoSummaryEvery','autoKeepRecent'].some(changed))appScope.queueAutomaticSummary();
+    if(['dynamicPersonaEnabled','dynamicPersonaEvery','dynamicPersonaKeepRecent','personaReviewEnabled','dynamicPersonaFactReviewEnabled'].some(changed))appScope.dynamicPersona.wake();
     appScope.setMessage(readingMessage??'全局设置已保存，所有聊天共用');return {status:'saved',settings:appScope.core.settings};
   }
 

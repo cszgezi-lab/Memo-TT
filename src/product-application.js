@@ -4,7 +4,7 @@ import { createLifecycleService } from './application/lifecycle.js';
 import { createOperationsService } from './application/operations.js';
 import { createDiagnosticsService } from './application/diagnostics.js';
 import { createViewService } from './application/view.js';
-import { createSettingsService } from './application/settings.js';
+import { createSettingsService,summaryIndependentSettings } from './application/settings.js';
 import { createMemoryService } from './application/memory.js';
 import { createSummaryService } from './application/summary.js';
 import { createAutomaticService } from './application/automatic.js';
@@ -253,7 +253,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(!hostAdapter.getStore)throw new Error('宿主没有提供全局扩展存储');
     return hostAdapter.getStore({scope:'extension'});
   };
-  const apiSettings=createGlobalSettings({getStore:globalStore,onApply:settings=>{const recallSettingsChanged=stableStringify({...core.settings,narrativeExtraction:''})!==stableStringify({...settings,narrativeExtraction:''}),readingChanged=core.settings.narrativeExtraction!==settings.narrativeExtraction;core.useGlobalSettings(settings);core.setSessionCredential(effectiveKeys().summary);if(recallSettingsChanged)recallChanged({vectors:true});else if(readingChanged)recallChanged();notify();}});
+  const apiSettings=createGlobalSettings({getStore:globalStore,onApply:settings=>{const recallSettingsChanged=stableStringify(summaryIndependentSettings({...core.settings,narrativeExtraction:''}))!==stableStringify(summaryIndependentSettings({...settings,narrativeExtraction:''})),readingChanged=core.settings.narrativeExtraction!==settings.narrativeExtraction;core.useGlobalSettings(settings);core.setSessionCredential(effectiveKeys().summary);if(recallSettingsChanged)recallChanged({vectors:true});else if(readingChanged)recallChanged();notify();}});
   const credentials=createCredentialStore({getStore:globalStore});
   let autoRunning=false,personaLaunch=null,personaCommandVersion=0;
   const state = { credentialSaved:{},credentialErrors:{}, modules:[],moduleSnapshots:[],moduleCurrent:[],mvuPaths:[],mvuStatus:'no_chat', status: 'unbound', message: '开始总结时自动读取 TT 当前聊天', cards: [], documents: [], history: [], batches: [], records: {}, conversations: [], conversationId: 'main', proposal: null, lastApplied: null, draft: '', preview: null, actual: null, progress: '', savedThrough: -1, hidden: [], stale: false };

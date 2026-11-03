@@ -4,7 +4,7 @@ import { buildDictionary, dictionaryQuery,enrichRetrievalMetadata } from './prod
 import { fullSearchText, narrativeText, recordTitle, sourceFloors, sourceLabel, stateLabel, awarenessLabel, viaLabel, relationLabel, epistemicLabel, fieldLabel,scopeLabel,compactAwarenessText } from './product-narrative.js';
 import { hasStoryTime, storyDateOf } from './temporal.js';
 import { coveredRecallRecord, recallSelectionReason, nameOnlyRecallCandidates, coverLocalQuestionParts, coverLocalQuestionPartsAsync, recallActorFilter } from './product-recall-packing.js';
-import { factValue, factImportance, fullCharacterGroups, currentAttributeRecords, awarenessSubjectLabel, characterRecordSubjects, explicitSubjectNames, PERSON_RECORD_CATEGORIES, factKey } from './product-person-profiles.js';
+import { factValue, factImportance, fullCharacterGroups, currentAttributeRecords, awarenessSubjectLabel, characterRecordSubjects, explicitSubjectNames, PERSON_RECORD_CATEGORIES, factKey,numericFactProjection } from './product-person-profiles.js';
 import {foldName} from './persona-identity.js';
 import {markMemoryStates,memoryHistoryIntent} from './memory-current-state.js';
 import { compileEventPacket } from './product-event-packet.js';
@@ -155,7 +155,7 @@ function* memoryCardSteps(records = {}, { hidden = [], knowledge = [], includeAw
   }
   const attached=new Set(cards.filter(c=>c.category!=='awarenessChanges'&&c.category!=='summaryView').flatMap(c=>(c.awareness??[]).map(a=>a.id)));
   for(const card of cards)if(card.category==='awarenessChanges')card.standaloneRecall=!attached.has(card.id);
-  return markMemoryStates([...markDiaryHistory(cards), ...knowledge.filter(r => !ignored.has(r.id))]);
+  return markMemoryStates(numericFactProjection([...markDiaryHistory(cards), ...knowledge.filter(r => !ignored.has(r.id))]));
 }
 function dateOnly(value) {
   const s = storyDateOf(value);
