@@ -128,6 +128,13 @@ async function startChatTracking(){
 
 async function followCurrentChat(){
     await startChatTracking();if(appScope.disposed)return appScope.publicState();
+    if(!appScope.followPending&&!appScope.following&&!appScope.opening&&appScope.workspace?.isCurrent()&&!appScope.state.stale){
+      const epoch=appScope.epoch,version=appScope.followVersion;
+      let target;
+      try{target=await appScope.hostAdapter.currentRef();}catch{/* The follower handles unavailable identity. */}
+      if(appScope.disposed)return appScope.publicState();
+      if(target&&epoch===appScope.epoch&&version===appScope.followVersion&&appScope.workspace?.isCurrent()&&!appScope.state.stale&&appScope.boundRefKey===stableStringify(target))return appScope.publicState();
+    }
     requestChatFollow();return new Promise(resolve=>{appScope.followWaiters.push(resolve);wakeChatFollower();});
   }
 
