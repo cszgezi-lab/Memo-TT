@@ -1,4 +1,6 @@
 import {summaryPresetFromRules} from './summary-presets.js';
+import {productApiProfile} from './product-model-list.js';
+import {normalizeProviderProfile} from './provider.js';
 import {resolveArchiveSession,exportMemoryArchive,previewMemoryArchive,importMemoryArchive} from './memory-archive.js';
 import {createWorkspace} from './product-workspace.js';
 import {readCachedFailureResponses} from './summary-response-evidence.js';
@@ -892,7 +894,9 @@ export function createProductShellController({
     async exportMemoryArchive({check:callerCheck=()=>{}}={}){
       if(!state.session||activeTask)throw new Error('请先打开聊天并等待任务结束');const session=state.session,token=currentToken();
       const check=async()=>{callerCheck();if(!tokenValid(token,session)||stableStringify(await adapterInstance.currentRef())!==session.refKey)throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});};
-      return exportMemoryArchive({session,store:sessionStore,cleanMessages,check});
+      const profile=productApiProfile(state.settings,'embedding'),vectorKeys=[];
+      if(profile.endpoint&&profile.model){const normalized=normalizeProviderProfile(profile);vectorKeys.push('vectors-'+sha256({endpoint:normalized.url,model:normalized.model}).slice(0,20));}
+      return exportMemoryArchive({session,store:sessionStore,cleanMessages,check,vectorKeys});
     },
     async previewMemoryArchive(archive,{check:callerCheck=()=>{}}={}){
       if(!state.session||activeTask)throw new Error('请先打开聊天并等待任务结束');const session=state.session,token=currentToken();

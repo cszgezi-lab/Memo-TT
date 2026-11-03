@@ -8,6 +8,7 @@ import {memoStorageLock} from './memo-storage-lock.js';
 import {summaryFrontier,summaryOrigin} from './product-auto-summary.js';
 import {applyPersonaCasting} from './persona-casting.js';
 import {savedBatchOperation} from './product-batches.js';
+import {decodeVectorDocumentAsync} from './product-vector-storage.js';
 
 const NS='shiyi-memory-archives',MEMORY='shiyi-product-memory',WORK='shiyi-product-workspace';
 const roots=['ui','hidden','auto-progress','summary-batches','dynamic-persona','vector-excluded','event-merge-decisions-v1','memory-quality-v1','memory-retrospective-v1','custom-mvu-snapshots'];
@@ -50,7 +51,7 @@ function savedRows(rows,view){return rows.map(b=>{
  return active?{...b,status:'saved',operationId:operation,savedOperationId:operation,...(b.operationId!==operation?{archivePreviousAttempt:b.operationId}:{}),error:null}:b;
 });}
 
-export async function collectArchiveDocuments(store,scope,check=()=>{}){
+export async function collectArchiveDocuments(store,scope,check=()=>{},vectorKeys=[]){
  store=losslessStore(store);const entries=new Map(),queue=[],ops=new Set(),seen=new Set();
  const add=(namespace,key,required=false)=>{if(typeof key!=='string'||key.length>600)throw fail('档案引用无效');queue.push({namespace,key,required});};
  const op=id=>{if(typeof id!=='string'||!id||ops.has(id))return;ops.add(id);for(const p of ['operation','checkpoint','task'])add(MEMORY,keyOf(p,p==='operation'?id:scopeKey(scope)+'|'+id));};
@@ -59,11 +60,13 @@ export async function collectArchiveDocuments(store,scope,check=()=>{}){
   if(v.id&&Array.isArray(v.items)){for(const item of v.items)add(WORK,workKey(scope,`persona-result-${v.id}-${item.startIndex}-${item.endIndex}`));for(const p of ['persona-manual-archive-','persona-rebuild-archive-'])add(WORK,workKey(scope,p+v.id));}
  };
  add(MEMORY,memoryPointer(scope));add(MEMORY,keyOf('task-catalog',scopeKey(scope)));for(const root of roots)add(WORK,workKey(scope,root));
+ for(const key of vectorKeys){if(!/^vectors-[a-f0-9]{20}$/.test(key))throw fail('向量缓存标识无效');for(const name of [key,key+'-jobs-v1',key+'-rebuild-v1',key+'-response-jobs-v1'])add(WORK,workKey(scope,name));}
  let chars=0;
  while(queue.length){const {required,...a}=queue.shift(),id=addressKey(a);if(seen.has(id))continue;seen.add(id);await check();const row=await optionalLegacyRead(store,a);await check();if(!row.found){if(required)throw fail('档案依赖缺失，原成果保留');continue;}
   chars+=stableStringify(row.value).length;if(chars>256*1024*1024||entries.size>20000)throw fail('档案超过本次导出容量');entries.set(id,{...a,value:row.value});
   if(a.namespace===MEMORY&&a.key===memoryPointer(scope)&&row.value.manifestRef)add(MEMORY,row.value.manifestRef,true);
   if(a.namespace===MEMORY&&row.value?.kind==='memory-manifest')for(const ref of row.value.chunks??[])add(MEMORY,ref.key,true);
+  if(a.namespace===WORK){const name=a.key.slice(workKey(scope,'').length);if(name.startsWith('vectors-')){const decoded=await decodeVectorDocumentAsync(name,row.value);if(decoded?.kind==='shiyi-vector-index'&&decoded.version===2)for(const entry of Object.values(decoded.entries??{}))for(const part of entry.parts??[])add(WORK,workKey(scope,part.key),true);}}
   scan(row.value);await yieldLocalWork({prioritized:false});
  }
  // Only heads can change under ordinary append-only writes. Verify all copied
@@ -83,12 +86,12 @@ function validateArchive(input){
  return input;
 }
 
-export async function exportMemoryArchive({session,store,cleanMessages=x=>x,check=()=>{}}){
- const docs=await collectArchiveDocuments(store,session.scope,check),sourceRows=await historySnapshot(session,check);
+export async function exportMemoryArchive({session,store,cleanMessages=x=>x,check=()=>{},vectorKeys=[]}){
+ const docs=await collectArchiveDocuments(store,session.scope,check,vectorKeys),sourceRows=await historySnapshot(session,check);
  const sourceStore=documentStore(docs),repo=new MemoryRepository({store:sourceStore,namespace:MEMORY});await repo.readScope(session.scope);await check();
  const persona=(await optionalLegacyRead(sourceStore,{namespace:WORK,key:workKey(session.scope,'dynamic-persona')})).value;
  const personaChecks=(persona?.batches??[]).filter(b=>b.status==='saved').map(b=>({startIndex:b.startIndex,endIndex:b.endIndex,valid:b.sourceHash===sha256(cleanMessages(sourceRows.slice(b.startIndex,b.endIndex+1).map(({speaker,...m})=>m)))}));
- for(const a of [{namespace:MEMORY,key:memoryPointer(session.scope)},...roots.map(name=>({namespace:WORK,key:workKey(session.scope,name)}))]){const before=await optionalLegacyRead(sourceStore,a),after=await optionalLegacyRead(store,a);await check();if(stableStringify(before)!==stableStringify(after))throw fail('导出期间档案发生变化，请重新导出');}
+ for(const a of [{namespace:MEMORY,key:memoryPointer(session.scope)},...[...roots,...vectorKeys.flatMap(key=>[key,key+'-jobs-v1',key+'-rebuild-v1',key+'-response-jobs-v1'])].map(name=>({namespace:WORK,key:workKey(session.scope,name)}))]){const before=await optionalLegacyRead(sourceStore,a),after=await optionalLegacyRead(store,a);await check();if(stableStringify(before)!==stableStringify(after))throw fail('导出期间档案发生变化，请重新导出');}
  const data={kind:'memo-memory-archive',version:1,archiveId:session.archive?.archiveId??sha256(makeId('archive')).slice(0,32),scope:clone(session.scope),createdAt:Date.now(),sources:sourceRows.map(descriptor),personaChecks,documents:docs};
  data.hash=sha256({...data,hash:undefined});return data;
 }
