@@ -455,6 +455,11 @@ export class MemoryRepository {
 
   async getCommittedRevision(scope) { return (await this._getPointer(normalizeScope(scope))).committedRevision; }
 
+  async isCurrentSnapshot(scope, snapshot) {
+    const pointer = await this._getPointer(normalizeScope(scope));
+    return stableStringify(pointer) === stableStringify(snapshot.pointer);
+  }
+
   async readScope(scope, options = {}) {
     if(options.reuseSnapshot) {
       const {includeOperations=[],excludeOperations=[],includeHistory=true,check=()=>{}}=options;

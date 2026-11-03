@@ -199,6 +199,7 @@ export function createProductShellController({
   let sessionStore = null;
   let repository = null;
   const operationMemoryViews=new WeakMap();
+  const savedSnapshots=new Map();
   let engine = null;
   let transport = null;
   let abortController = null;
@@ -838,8 +839,17 @@ export function createProductShellController({
       if(!cached||!tokenValid(cached.token,cached.session)||stableStringify(cached.scope)!==stableStringify(state.scope))throw Object.assign(new Error('本次存储快照已变化，请重新读取'),{code:'PERSISTENCE_ERROR',details:{reason:'storage_mismatch',storageStage:'compare',storageArtifact:'memory'}});
       reuseSnapshot=cached.snapshot;
     }
-    const snapshot = await repository.readScope(state.scope,{check,...(reuseSnapshot?{reuseSnapshot}:{})});
-    check();
+    const session=state.session, reader=repository, scope=state.scope, token=currentToken();
+    const guard=()=>{check();if(!tokenValid(token,session)||repository!==reader)throw Object.assign(new Error('读取期间聊天已切换'),{code:'CHAT_CHANGED'});};
+    const key=stableStringify([session.refKey,scope,session.archive?.branchId??null]);
+    const cached=savedSnapshots.get(key);
+    const hit=!reuseSnapshot&&cached&&await reader.isCurrentSnapshot(scope,cached);
+    guard();
+    const snapshot=hit?clone(cached):await reader.readScope(scope,{check:guard,...(reuseSnapshot?{reuseSnapshot}:{})});
+    guard();
+    savedSnapshots.delete(key);
+    savedSnapshots.set(key,hit?cached:clone(snapshot));
+    if(savedSnapshots.size>2)savedSnapshots.delete(savedSnapshots.keys().next().value);
     return memoryView(snapshot);
   }
   function memoryView(snapshot){
@@ -877,6 +887,7 @@ export function createProductShellController({
 
   async function dispose() {
     destroyed = true;
+    savedSnapshots.clear();
     generation += 1;
     bindingGeneration += 1;
     if (abortController && !abortController.signal.aborted) abortController.abort('disposed');
