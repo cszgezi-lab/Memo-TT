@@ -241,17 +241,23 @@ async function open({enable = true, expectedRef, passive=false,rebind=false} = {
     await appScope.apiSettings.adoptLegacy(appScope.core.legacySettings);checkOpen();
     appScope.core.setSessionCredential(appScope.effectiveKeys().summary);
     appScope.boundScope = (appScope.core.readViewState?.()??appScope.core.state).scope;appScope.boundRefKey=targetKey;
-    const [ui,hidden,excludedVectors]=await Promise.all([appScope.workspace.read('ui',{savedThrough:-1}),appScope.workspace.read('hidden',[]),appScope.workspace.read('vector-excluded',[])]);
+    const [ui,hidden,excludedVectors,autoProgress,openingBatchRows]=await Promise.all([
+      appScope.workspace.read('ui',{savedThrough:-1}),
+      appScope.workspace.read('hidden',[]),
+      appScope.workspace.read('vector-excluded',[]),
+      appScope.workspace.read('auto-progress',{startFloor:1}),
+      appScope.workspace.read('summary-batches',[]),
+    ]);
     checkOpen();appScope.vectorExcluded=Array.isArray(excludedVectors)?excludedVectors.filter(id=>typeof id==='string'):[];
     checkOpen();appScope.assertCurrent();Object.assign(appScope.state,{savedThrough:ui.savedThrough??-1,hidden,preview:null,actual:null,stale:false});
-    const autoProgress=await appScope.workspace.read('auto-progress',{startFloor:1});checkOpen();appScope.state.autoStartFloor=Number.isSafeInteger(autoProgress.startFloor)&&autoProgress.startFloor>=0?autoProgress.startFloor:1;appScope.state.autoOriginFloor=Number.isSafeInteger(autoProgress.originFloor)&&autoProgress.originFloor>=0?autoProgress.originFloor:undefined;appScope.state.autoLastIndex=null;
+    appScope.state.autoStartFloor=Number.isSafeInteger(autoProgress.startFloor)&&autoProgress.startFloor>=0?autoProgress.startFloor:1;appScope.state.autoOriginFloor=Number.isSafeInteger(autoProgress.originFloor)&&autoProgress.originFloor>=0?autoProgress.originFloor:undefined;appScope.state.autoLastIndex=null;
     await appScope.migrateWorkspace();
-    await appScope.normalizeBatchRanges();
+    const normalizedBatchRows=await appScope.normalizeBatchRanges(openingBatchRows);
     checkOpen();
     for (const name of ['CHAT_CHANGED','MESSAGE_EDITED','MESSAGE_UPDATED','MESSAGE_SWIPED','MESSAGE_DELETED','MESSAGE_SWIPE_DELETED']) {
       try { appScope.bindings.push(appScope.hostAdapter.subscribe(name, async () => {if(appScope.tracking)return;if(name==='MESSAGE_UPDATED'&&moduleMetadataOnly()){await appScope.syncModulesQuietly();return;}if(!sourceEventRelevant(name)){rememberModuleSources();appScope.queueAutomaticSummary();appScope.dynamicPersona.wake();return;}invalidate(name);})); } catch { /* no automatic activation without final hook */ }
     }
-    appScope.state.status = 'ready'; await appScope.refresh({boundOnly:true,savedOnly:true}); checkOpen();
+    appScope.state.status = 'ready'; await appScope.refresh({boundOnly:true,savedOnly:true,openingBatchRows:normalizedBatchRows}); checkOpen();
     try{await appScope.syncAutoStartFloor();}catch(error){void appScope.reportError(error,{task:'summary',stage:'auto_start_floor'});}checkOpen();
     try{await appScope.dynamicPersona.load({savedOnly:true});}catch(error){void appScope.reportError(error,{task:'persona',stage:'prepare'});appScope.state.dynamicPersona={...appScope.dynamicPersona.state,message:appScope.dynamicPersona.state.message||failureText(error)};}checkOpen();
     // An empty workspace has no protected sources yet; establish full-window

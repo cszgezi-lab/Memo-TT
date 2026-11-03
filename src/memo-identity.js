@@ -1,4 +1,4 @@
-const VERSION = '1.0.48';
+const VERSION = '1.0.49';
 const identities = new Map();
 
 function name(value, kind) {

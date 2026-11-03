@@ -36,7 +36,7 @@ async function migrateWorkspace(){
     await appScope.globalWorkspace.write('legacy-imported',{at:Date.now()});
   }
 
-async function refresh({savedOnly=false,recheckSources=false,boundOnly=false,summaryCommit=false,bookkeepingOnly=false,check:parentCheck,view:reusableView}={}) {
+async function refresh({savedOnly=false,recheckSources=false,boundOnly=false,summaryCommit=false,bookkeepingOnly=false,check:parentCheck,view:reusableView,openingBatchRows}={}) {
     parentCheck?.();
     if(appScope.tracking&&!boundOnly&&(!appScope.workspace?.isCurrent()||appScope.state.stale)){await appScope.followCurrentChat();parentCheck?.();if(!appScope.workspace?.isCurrent())throw Object.assign(new Error('当前没有可读取的聊天'),{code:'CHAT_REF_UNAVAILABLE'});return;}
     const mutationKey=appScope.memoryMutationKey(),mutation=appScope.memoryMutationGuards.get(mutationKey),mutationRevision=mutation?.revision;
@@ -84,7 +84,7 @@ async function refresh({savedOnly=false,recheckSources=false,boundOnly=false,sum
     try{await appScope.modules.sync();}catch(error){check();void appScope.reportError(error,{task:'background',stage:'background'});appScope.state.message='MVU 暂不可读，扩展区块没有使用旧值；可点击刷新重试';}
     const cards=await memoryCardsAsync(appScope.state.records,{hidden:appScope.state.hidden,includeAwareness:true},{check});
     check();appScope.state.cards = projectMergedCards(appScope.modules.cards(cards),appScope.state.records,appScope.mergeDecisions,appScope.state.merges).filter(c=>!appScope.state.hidden.includes(c.id));
-    await readBatches(view,{check});check();
+    await readBatches(view,{check,rows:openingBatchRows});check();
     // Publish a completed view atomically for sends. Pure additions do not
     // invalidate an in-flight recall of the preceding committed snapshot.
     // Replacements/deletions/knowledge changes still invalidate it immediately.
@@ -111,22 +111,22 @@ async function syncModulesQuietly(){
     catch(error){if(!current())return;void appScope.reportError(error,{task:'background',stage:'background'});appScope.state.cards=appScope.state.cards.filter(c=>!c.readonly);appScope.recallChanged();appScope.setMessage('MVU 读取未完成，旧变量未注入；请重新加载当前聊天或刷新变量');}
   }
 
-async function normalizeBatchRanges(){
-    const list=await appScope.workspace.read('summary-batches',[]);
-    if(!hasDuplicateSummaryBatchRanges(list))return;
+async function normalizeBatchRanges(rows){
+    const list=rows??await appScope.workspace.read('summary-batches',[]);
+    if(!hasDuplicateSummaryBatchRanges(list))return list;
     const view=await appScope.core.readMemoryView();
     const consolidated=consolidateSummaryBatches(list,view.controls?.operations);
-    if(!consolidated.removed)return;
+    if(!consolidated.removed)return list;
     // Save a recovery copy before hiding duplicate generations. A failed write
     // leaves the old batch list available so normalization can safely retry.
     if(!await appScope.workspace.read('summary-batches-before-range-dedup-v1'))await appScope.workspace.write('summary-batches-before-range-dedup-v1',list);
     if(Object.keys(consolidated.retire).length)await appScope.core.updateMemoryControls({operations:consolidated.retire});
-    await appScope.workspace.write('summary-batches',consolidated.rows);
+    return appScope.workspace.write('summary-batches',consolidated.rows);
   }
 
-async function readBatches(view,{check:parentCheck}={}){
+async function readBatches(view,{check:parentCheck,rows}={}){
     const token=appScope.epoch,bound=appScope.workspace,check=()=>{appScope.assertCurrent(token);parentCheck?.();};check();
-    let list=await bound.read('summary-batches',[]);check();
+    let list=rows??await bound.read('summary-batches',[]);check();
     const known=new Set(list.flatMap(b=>[b.operationId,b.previousOperation,...(b.attempts??[])]));
     const parents=[...new Set((view.records?.history??[]).map(h=>h.operationId?.split('/child-')[0]).filter(id=>id?.startsWith('product-summary_')&&!known.has(id)))];
     const legacy=parents.map((operationId,i)=>{
