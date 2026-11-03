@@ -440,7 +440,7 @@ export function productFailure(error) {
   }
   if(code==='INPUT_BUDGET_EXCEEDED'&&Number.isSafeInteger(error?.details?.inputUnits)&&Number.isSafeInteger(error?.details?.inputLimit))message=`本次模型输入估算 ${error.details.inputUnits}，超过设置的 ${error.details.inputLimit}；该请求尚未发送。已返回的结果保留，可调整输入预算后继续。`;
   if(error?.details?.reason==='stream_incomplete')message=`回复在完成前断开${Number.isFinite(error.details.responseChars)?`，收到 ${error.details.responseChars} 字符`:''}。本批未保存，可点“重试本批”。`;
-  if(error?.details?.reason==='stream_invalid')message='服务返回的流式格式不兼容，本次结果未保存。可在 API → 请求设置选择“兼容非流式”后重试；不会自动追加一次收费请求。';
+  if(error?.details?.reason==='stream_invalid')message='服务返回的流式格式不兼容，本次结果未保存。可在设置 → API → 总结中把“总结请求方式”改为“兼容非流式”，保存后重试；不会自动追加一次收费请求。';
   if(error?.details?.reason==='stream_error'&&!status&&error?.details?.upstreamCode!=='insufficient_quota'&&!message){
     const nativeText={'network.timeout':'等待模型服务的回答超时','network.connect_failed':'没有连上模型服务','network.proxy_failed':'连接模型服务所用的代理没有连上','network.dns_failed':'找不到模型服务的地址','network.tls_failed':'没能与模型服务建立安全连接','network.request_failed':'请求模型服务失败，暂时没有更多原因'},upstreamText={timeout:'模型服务报告等待回答超时',connection_reset:'模型服务报告连接中断',overloaded:'模型服务报告当前繁忙'};
     const cause=(Object.hasOwn(nativeText,error.details.nativeErrorCode)?nativeText[error.details.nativeErrorCode]:undefined)??(Object.hasOwn(upstreamText,error.details.upstreamHint)?upstreamText[error.details.upstreamHint]:undefined);
