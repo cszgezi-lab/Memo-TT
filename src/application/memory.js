@@ -51,7 +51,7 @@ async function refresh({savedOnly=false,recheckSources=false,boundOnly=false,sum
       if(mutation)appScope.memoryMutationGuards.delete(mutationKey);
       appScope.notify();return view;
     }
-    const validity = savedOnly ? {validKeys:Object.values(view.records??{}).filter(Array.isArray).flatMap(rows=>rows.flatMap(r=>(r.sourceRefs??[]).map(sourceKey))),invalidKeys:[],unknownKeys:[],totalCount:null,readStats:{savedOnly:true}} : await appScope.core.sourceValidity(view.records ?? {},{includeMessages:true,reuseVerified:!recheckSources});
+    const validity = savedOnly ? {validKeys:[],invalidKeys:[],unknownKeys:[],totalCount:null,readStats:{savedOnly:true}} : await appScope.core.sourceValidity(view.records ?? {},{includeMessages:true,reuseVerified:!recheckSources});
     check();
     const liveChat=mvuContext(appScope.host)?.chat;
     appScope.sourcePrefixVerified=!savedOnly&&(validity.totalCount===null&&!appScope.sourceEventRelevant('SOURCE_REFRESH')||Array.isArray(liveChat)&&liveChat.length===validity.totalCount&&!validity.invalidKeys.length&&!validity.unknownKeys.length&&(validity.messages??[]).every(m=>{
@@ -59,20 +59,24 @@ async function refresh({savedOnly=false,recheckSources=false,boundOnly=false,sum
     }));
     appScope.runtimeLog.record({task:'background',phase:'reading',details:{stage:'prepare',...validity.readStats}});
     const valid = new Set(validity.validKeys);
-    const filtered = Object.fromEntries(Object.entries(view.records ?? {}).map(([key, records]) => [key, Array.isArray(records) ? records.filter(record => (record.sourceRefs ?? []).every(ref => valid.has(sourceKey(ref)))) : records]));
+    const filtered = savedOnly ? view.records??{} : Object.fromEntries(Object.entries(view.records ?? {}).map(([key, records]) => [key, Array.isArray(records) ? records.filter(record => (record.sourceRefs ?? []).every(ref => valid.has(sourceKey(ref)))) : records]));
     const all=Object.values(view.records?.history??{}).flatMap(h=>MEMORY_CATEGORIES.flatMap(k=>h.categories?.[k]??[]));
     appScope.state.deletedRecords=[...new Map(all.filter(r=>view.controls?.deletedRecords?.[r.id]).map(r=>[r.id,r])).values()];
     appScope.state.rawRecords=filtered;appScope.state.memoryControls=view.controls??{};
     appScope.state.summaryHold=view.controls?.automation?.summaryHold??null;
-    const loadedQuality=await bound.read(QUALITY_STORE_KEY,{});check();appScope.qualitySaved=loadedQuality;
+    const [loadedQuality,loadedRetrospective,loadedMerges]=await Promise.all([
+      bound.read(QUALITY_STORE_KEY,{}),
+      bound.read(RETROSPECTIVE_STORE_KEY,null),
+      bound.read(MERGE_STORE_KEY,{}),
+    ]);check();
+    appScope.qualitySaved=loadedQuality;
     appScope.state.records=projectQualityRecords(filtered,appScope.qualitySaved,view.controls,{copyUnchanged:false});
     appScope.state.quality=qualityStatus(filtered,appScope.qualitySaved,view.controls,appScope.state.records);
-    const loadedRetrospective=await bound.read(RETROSPECTIVE_STORE_KEY,null);check();appScope.retrospectiveSaved=loadedRetrospective;
+    appScope.retrospectiveSaved=loadedRetrospective;
     if(!appScope.retrospectiveOperation)appScope.state.memoryRetrospective=retrospectiveState(appScope.retrospectiveSaved,{records:appScope.state.records,controls:view.controls,dictionary:appScope.activeDictionary()});
     appScope.state.records=projectRetrospectiveRecords(appScope.state.records,retrospectiveEntries(appScope.retrospectiveSaved),view.controls,{dictionary:appScope.activeDictionary()});
     const qualityDeleted=Object.values(appScope.qualitySaved).filter(e=>qualityEntryCurrent(e,filtered)).flatMap(e=>(e.additions??[]).map(a=>a.record)).filter(r=>view.controls?.deletedRecords?.[r.id]);
     appScope.state.deletedRecords.push(...qualityDeleted);
-    const loadedMerges=await bound.read(MERGE_STORE_KEY,{});check();
     const settled=settleEventMerges(appScope.state.records,loadedMerges,{enabled:appScope.core.settings.autoMergeEnabled});
     if(settled.changed){await bound.write(MERGE_STORE_KEY,settled.decisions);check();}
     appScope.mergeDecisions=settled.decisions;

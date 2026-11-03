@@ -71,8 +71,16 @@ export async function collectArchiveDocuments(store,scope,check=()=>{},vectorKey
  }
  // Only heads can change under ordinary append-only writes. Verify all copied
  // mutable documents too, so an export never combines two user edit revisions.
- for(const e of entries.values()){const now=await optionalLegacyRead(store,e);await check();if(!now.found||stableStringify(now.value)!==stableStringify(e.value))throw fail('导出期间成果发生变化，请重新导出');}
- return [...entries.values()];
+ const documents=[...entries.values()];
+ for(let offset=0;offset<documents.length;offset+=4){
+  await check();
+  await Promise.all(documents.slice(offset,offset+4).map(async e=>{
+   const now=await optionalLegacyRead(store,e);await check();
+   if(!now.found||stableStringify(now.value)!==stableStringify(e.value))throw fail('导出期间成果发生变化，请重新导出');
+  }));
+  await yieldLocalWork({prioritized:false});
+ }
+ return documents;
 }
 function documentStore(documents){
  const rows=new Map(documents.map(e=>[addressKey(e),clone(e.value)]));
