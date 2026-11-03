@@ -228,7 +228,7 @@ async function open({enable = true, expectedRef, passive=false,rebind=false} = {
     for (const name of ['CHAT_CHANGED','MESSAGE_EDITED','MESSAGE_UPDATED','MESSAGE_SWIPED','MESSAGE_DELETED','MESSAGE_SWIPE_DELETED']) {
       try { appScope.bindings.push(appScope.hostAdapter.subscribe(name, async () => {if(appScope.tracking)return;if(name==='MESSAGE_UPDATED'&&moduleMetadataOnly()){await appScope.syncModulesQuietly();return;}if(!sourceEventRelevant(name)){rememberModuleSources();appScope.queueAutomaticSummary();appScope.dynamicPersona.wake();return;}invalidate(name);})); } catch { /* no automatic activation without final hook */ }
     }
-    appScope.state.status = 'ready';rememberModuleSources(); await appScope.refresh({boundOnly:true,savedOnly:true}); checkOpen();
+    appScope.state.status = 'ready'; await appScope.refresh({boundOnly:true,savedOnly:true}); checkOpen();
     try{await appScope.syncAutoStartFloor();}catch(error){void appScope.reportError(error,{task:'summary',stage:'auto_start_floor'});}checkOpen();
     try{await appScope.dynamicPersona.load({savedOnly:true});}catch(error){void appScope.reportError(error,{task:'persona',stage:'prepare'});appScope.state.dynamicPersona={...appScope.dynamicPersona.state,message:appScope.dynamicPersona.state.message||failureText(error)};}checkOpen();
     // An empty workspace has no protected sources yet; establish full-window

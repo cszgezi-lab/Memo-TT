@@ -90,7 +90,8 @@ async function refresh({savedOnly=false,recheckSources=false,boundOnly=false,sum
     appScope.state.sourceStatus = {invalid:validity.invalidKeys.length,unknown:validity.unknownKeys.length,pending:savedOnly};
     appScope.autoInvalidSources=new Set([...validity.invalidKeys,...validity.unknownKeys]);
     const docs = await appScope.globalWorkspace.read('documents', []);check();
-    appScope.state.documents = docs; await appScope.warmRecall();check();
+    appScope.state.documents = docs;
+    if(!savedOnly){await appScope.warmRecall();check();}
     if(appScope.memoryMutationKey()!==mutationKey||appScope.memoryMutationGuards.get(mutationKey)!==mutation||mutation&&(mutation.pending.size||mutation.revision!==mutationRevision))throw appScope.pendingMemoryMutation();
     if(mutation)appScope.memoryMutationGuards.delete(mutationKey);
     appScope.committedRecall=appScope.captureRecallSnapshot();
