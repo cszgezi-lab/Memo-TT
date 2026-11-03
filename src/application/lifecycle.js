@@ -89,7 +89,7 @@ async function runChatFollower(){
     try{await appScope.following;}finally{
       appScope.following=null;
       if(appScope.followPending&&!appScope.disposed)wakeChatFollower();
-      else {for(const resolve of appScope.followWaiters.splice(0))resolve(appScope.publicState());appScope.queueAutomaticSummary();appScope.dynamicPersona.wake();}
+      else {for(const resolve of appScope.followWaiters.splice(0))resolve();appScope.queueAutomaticSummary();appScope.dynamicPersona.wake();}
     }
   }
 
@@ -126,16 +126,16 @@ async function startChatTracking(){
     try{await appScope.trackingStart;}catch(error){appScope.trackingStart=null;throw error;}
   }
 
-async function followCurrentChat(){
-    await startChatTracking();if(appScope.disposed)return appScope.publicState();
+async function followCurrentChat({returnState=true}={}){
+    await startChatTracking();if(appScope.disposed)return returnState?appScope.publicState():undefined;
     if(!appScope.followPending&&!appScope.following&&!appScope.opening&&appScope.workspace?.isCurrent()&&!appScope.state.stale){
       const epoch=appScope.epoch,version=appScope.followVersion;
       let target;
       try{target=await appScope.hostAdapter.currentRef();}catch{/* The follower handles unavailable identity. */}
-      if(appScope.disposed)return appScope.publicState();
-      if(target&&epoch===appScope.epoch&&version===appScope.followVersion&&appScope.workspace?.isCurrent()&&!appScope.state.stale&&appScope.boundRefKey===stableStringify(target))return appScope.publicState();
+      if(appScope.disposed)return returnState?appScope.publicState():undefined;
+      if(target&&epoch===appScope.epoch&&version===appScope.followVersion&&appScope.workspace?.isCurrent()&&!appScope.state.stale&&appScope.boundRefKey===stableStringify(target))return returnState?appScope.publicState():undefined;
     }
-    requestChatFollow();return new Promise(resolve=>{appScope.followWaiters.push(resolve);wakeChatFollower();});
+    requestChatFollow();return new Promise(resolve=>{appScope.followWaiters.push(returnState?()=>resolve(appScope.publicState()):()=>resolve());wakeChatFollower();});
   }
 
 function rememberModuleSources(){
@@ -241,15 +241,14 @@ async function open({enable = true, expectedRef, passive=false,rebind=false} = {
     await appScope.apiSettings.adoptLegacy(appScope.core.legacySettings);checkOpen();
     appScope.core.setSessionCredential(appScope.effectiveKeys().summary);
     appScope.boundScope = (appScope.core.readViewState?.()??appScope.core.state).scope;appScope.boundRefKey=targetKey;
-    const [ui,hidden,excludedVectors,autoProgress,openingBatchRows]=await Promise.all([
-      appScope.workspace.read('ui',{savedThrough:-1}),
+    const [hidden,excludedVectors,autoProgress,openingBatchRows]=await Promise.all([
       appScope.workspace.read('hidden',[]),
       appScope.workspace.read('vector-excluded',[]),
       appScope.workspace.read('auto-progress',{startFloor:1}),
       appScope.workspace.read('summary-batches',[]),
     ]);
     checkOpen();appScope.vectorExcluded=Array.isArray(excludedVectors)?excludedVectors.filter(id=>typeof id==='string'):[];
-    checkOpen();appScope.assertCurrent();Object.assign(appScope.state,{savedThrough:ui.savedThrough??-1,hidden,preview:null,actual:null,stale:false});
+    checkOpen();appScope.assertCurrent();Object.assign(appScope.state,{savedThrough:-1,hidden,preview:null,actual:null,stale:false});
     appScope.state.autoStartFloor=Number.isSafeInteger(autoProgress.startFloor)&&autoProgress.startFloor>=0?autoProgress.startFloor:1;appScope.state.autoOriginFloor=Number.isSafeInteger(autoProgress.originFloor)&&autoProgress.originFloor>=0?autoProgress.originFloor:undefined;appScope.state.autoLastIndex=null;
     await appScope.migrateWorkspace();
     const normalizedBatchRows=await appScope.normalizeBatchRanges(openingBatchRows);
@@ -257,9 +256,24 @@ async function open({enable = true, expectedRef, passive=false,rebind=false} = {
     for (const name of ['CHAT_CHANGED','MESSAGE_EDITED','MESSAGE_UPDATED','MESSAGE_SWIPED','MESSAGE_DELETED','MESSAGE_SWIPE_DELETED']) {
       try { appScope.bindings.push(appScope.hostAdapter.subscribe(name, async () => {if(appScope.tracking)return;if(name==='MESSAGE_UPDATED'&&moduleMetadataOnly()){await appScope.syncModulesQuietly();return;}if(!sourceEventRelevant(name)){rememberModuleSources();appScope.queueAutomaticSummary();appScope.dynamicPersona.wake();return;}invalidate(name);})); } catch { /* no automatic activation without final hook */ }
     }
-    appScope.state.status = 'ready'; await appScope.refresh({boundOnly:true,savedOnly:true,openingBatchRows:normalizedBatchRows}); checkOpen();
+    appScope.state.status = 'ready';
+    const [memoryResult,personaResult]=await Promise.allSettled([
+      appScope.refresh({boundOnly:true,savedOnly:true,openingBatchRows:normalizedBatchRows}),
+      appScope.dynamicPersona.load({savedOnly:true}),
+    ]);
+    checkOpen();
+    if(memoryResult.status==='rejected')throw memoryResult.reason;
+    if(personaResult.status==='rejected'){
+      void appScope.reportError(personaResult.reason,{task:'persona',stage:'prepare'});
+      appScope.state.dynamicPersona={...appScope.dynamicPersona.state,message:appScope.dynamicPersona.state.message||failureText(personaResult.reason)};
+    }
+    const savedEnds=appScope.state.batches.filter(batch=>batch.status==='saved').map(batch=>batch.endIndex).filter(Number.isSafeInteger);
+    if(savedEnds.length)appScope.state.savedThrough=Math.max(...savedEnds);
+    else if(!appScope.state.summaryHold){
+      const legacyUi=await appScope.workspace.read('ui',{savedThrough:-1});checkOpen();
+      appScope.state.savedThrough=legacyUi.savedThrough??-1;
+    }
     try{await appScope.syncAutoStartFloor();}catch(error){void appScope.reportError(error,{task:'summary',stage:'auto_start_floor'});}checkOpen();
-    try{await appScope.dynamicPersona.load({savedOnly:true});}catch(error){void appScope.reportError(error,{task:'persona',stage:'prepare'});appScope.state.dynamicPersona={...appScope.dynamicPersona.state,message:appScope.dynamicPersona.state.message||failureText(error)};}checkOpen();
     // An empty workspace has no protected sources yet; establish full-window
     // alignment from the native tail count, without scanning unrelated bodies.
     if(!appScope.state.batches.length&&!appScope.state.dynamicPersona?.batches?.length&&!appScope.state.dynamicPersona?.manualPlan&&appScope.core.sourceEndIndex===-1&&appScope.moduleSourceBaseline?.length===appScope.state.autoLastIndex+1)appScope.sourcePrefixVerified=true;
@@ -322,7 +336,7 @@ async function open({enable = true, expectedRef, passive=false,rebind=false} = {
     } catch { appScope.setMessage('已打开；宿主不支持自动任务，可手动整理和预览'); }
     appScope.setMessage(`已加载当前聊天：${appScope.state.cards.length} 条记忆、${appScope.state.batches.filter(b=>b.status!=='deleted').length} 个总结批次`);
     if(passive){appScope.state.feedback={id:++appScope.feedbackSequence,kind:'chat',level:'info',text:appScope.state.message};appScope.notify();}
-    return appScope.publicState();
+    return passive?undefined:appScope.publicState();
     } catch(error){appScope.workspace=null;appScope.boundScope=null;appScope.boundRefKey=null;appScope.state.cards=[];appScope.state.records={};appScope.state.batches=[];appScope.state.deletedRecords=[];appScope.state.progress='';appScope.modules.clear();appScope.state.status='unavailable';appScope.recallChanged({clear:true});await stopListeners();await clearPrompt();appScope.setMessage(`聊天读取未完成：${failureText(error)}`);throw error;
     } finally { appScope.opening = false; appScope.operations.delete(opener);if(appScope.active===opener)appScope.active=null;appScope.notify();wakeChatFollower();appScope.queueAutomaticSummary();appScope.dynamicPersona.wake(); }
   }
