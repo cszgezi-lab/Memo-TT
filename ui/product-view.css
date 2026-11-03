@@ -1289,3 +1289,6 @@
 #memo-product-shell .memo-log-toolbar{flex-wrap:wrap}#memo-product-shell .memo-log-toolbar :is(.memo-template-tabs,.memo-actions){flex-shrink:0;max-width:100%;flex-wrap:wrap}#memo-product-shell .memo-log-toolbar button{flex-shrink:0}
 
 #memo-product-shell .memo-preset-armor button[aria-pressed="true"]{background:color-mix(in srgb,var(--memo-accent) 22%,transparent);border-color:var(--memo-accent)}
+
+#memo-product-shell .memo-archive-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+#memo-product-shell .memo-archive-actions>button{width:100%;background:var(--memo-surface,transparent)}
