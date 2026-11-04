@@ -2,6 +2,8 @@ import {ShiyiError} from './errors.js';
 import {sha256,stableStringify} from './utils.js';
 import {scheduleDeadline} from './request-deadline.js';
 
+export const MAX_PARALLEL_SUMMARY_BATCHES=10;
+
 // Plugin-local, not a hook on the host's chat or global fetch. Never persist
 // the scope (which is a digest of the origin and credential headers).
 export function providerQueueScope(url,headers){
@@ -112,7 +114,7 @@ export function createProviderScheduler({requestsPerMinute=()=>0,now=()=>Date.no
       if(!lane){lane={active:new Set(),pending:[],starts:[],lastStart:null,cooldownUntil:0,failures:0,rateFailures:0,ratePenaltyUntil:0,stop:null};lanes.set(key,lane);}
       return new Promise((resolve,reject)=>{
         const item={signal,onWait,rpmLimit,minIntervalMs,priority,bypassForeground:bypassForeground===true,
-          parallelGroup,parallelLimit:Number.isInteger(parallelLimit)?Math.min(3,Math.max(1,parallelLimit)):1,resolve,reject,queuedAt:now()};
+          parallelGroup,parallelLimit:Number.isInteger(parallelLimit)?Math.min(MAX_PARALLEL_SUMMARY_BATCHES,Math.max(1,parallelLimit)):1,resolve,reject,queuedAt:now()};
         item.abort=()=>{const i=lane.pending.indexOf(item);if(i<0)return;lane.pending.splice(i,1);signal?.removeEventListener('abort',item.abort);reject(canceled());pump(lane);};
         signal?.addEventListener('abort',item.abort,{once:true});lane.pending.push(item);lane.pending.sort((a,b)=>b.priority-a.priority);pump(lane);
       });

@@ -1,3 +1,4 @@
+import {MAX_PARALLEL_SUMMARY_BATCHES} from '../provider-scheduler.js';
 import { HostAdapter } from '../host-adapter.js';
 import { sha256, makeId, stableStringify } from '../utils.js';
 import { numberedSummaryBatches, planSummaryRanges, batchRecords, MEMORY_CATEGORIES, batchOperationIds, sameBatchRange, savedBatchOperation, summaryOverwritePlan } from '../product-batches.js';
@@ -42,7 +43,7 @@ async function previewParallel(options){
     await prepareSummaryChat();
     const check=appScope.continuationCheck();
     const concurrency=options.parallelConcurrency;
-    if(!Number.isInteger(concurrency)||concurrency<1||concurrency>3)throw new Error('并行批数应为 1–3');
+    if(!Number.isInteger(concurrency)||concurrency<1||concurrency>MAX_PARALLEL_SUMMARY_BATCHES)throw new Error(`并行批数应为 1–${MAX_PARALLEL_SUMMARY_BATCHES} 的整数`);
     const batchSize=options.batchSize??appScope.core.settings.summaryBatchSize;
     const lastIndex=await appScope.core.historyTail();check();
     const selected=planSummaryRanges({...options,count:options.count??appScope.core.settings.messageCount,lastIndex,batchSize});
