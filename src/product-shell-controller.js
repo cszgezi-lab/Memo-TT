@@ -206,6 +206,7 @@ export function createProductShellController({
   let manualOperation = null;
   // Private proof registry: no source bodies/IDs are copied into public UI state.
   let summarySourceGuard = null;
+  let parallelSourceGuard = null;
 
   const state = {
     schemaVersion: 1,
@@ -345,6 +346,7 @@ export function createProductShellController({
       now,
       verifySourceRevision: async ({ bundle }) => {
         if (manualOperation && bundle.operationId === manualOperation.id && tokenValid(manualOperation.token, session)) return manualOperation.sourceRevision;
+        if(parallelSourceGuard?.operationId===bundle.operationId)return parallelSourceGuard.verify(bundle);
         const guard=summarySourceGuard,started=now();
         const valid=()=>guard&&summarySourceGuard===guard&&activeTask===guard.operationId&&tokenValid(guard.token,session)&&!abortController?.signal.aborted;
         const fail=(reason,error)=>{
@@ -522,6 +524,99 @@ export function createProductShellController({
     return null;
   }
 
+  function configuredSummaryModel(){
+    if(!model&&!modelFactory){
+      const {providerEndpoint,providerEndpointMode,providerModel,providerAuthMode,summaryDeadlineMs,deadlineMs,summaryStreaming,summaryRequestMode,outputBudgetUnits}=state.settings;
+      transport=transportFactory({providerEndpoint,providerEndpointMode,providerModel,providerAuthMode,deadlineMs:summaryDeadlineMs??deadlineMs,
+        summaryStreaming,summaryRequestMode,outputBudgetUnits},{sessionApiKey:state.sessionApiKey??'',fetchImpl});
+    }
+    return makeModel();
+  }
+
+  function prepareParallelSummary({focus='',check=()=>{}}={}){
+    if(!state.session||!repository||activeTask)throw new Error('请先打开聊天并等待当前任务结束');
+    const settings=state.settings,session=state.session,repo=repository,token=currentToken();
+    if(settings.summaryStaged||settings.summaryReviewEnabled)throw new Error('并行补总结每批只发一次请求。当前启用了分工或原文复核，请用顺序总结或先调整总结设置。');
+    const summaryModel=configuredSummaryModel();
+    if(!summaryModel)throw Object.assign(new Error('请先配置总结 API'),{code:'MODEL_UNAVAILABLE'});
+    const validate=summaryBundleValidator();
+    const rules=freezeSummaryRules([settings.recordingRules,settings.skillEvidenceEnabled===true?SKILL_RECORDING_RULE:'',runtimeRules({currentOnly:true})].filter(Boolean).join('\n'),
+      settings.summaryPresets,settings.narrativeExtraction,{currentOnly:true});
+    const focusSpec={mode:'inherit',confirmed:true,focus:text(focus)||null};
+    const {inputBudgetUnits,outputBudgetUnits}=settings;
+    const recipe=sha256([rules,focusSpec,inputBudgetUnits,outputBudgetUnits]);
+    const signature=sha256([recipe,settings.providerEndpoint,settings.providerModel,settings.providerEndpointMode,settings.providerAuthMode,
+      settings.summaryRequestMode,settings.summaryStreaming,settings.summaryDeadlineMs,state.sessionApiKey,session.scope]);
+    const guard=()=>{check();if(!tokenValid(token,session))throw Object.assign(new Error('聊天或来源已变化'),{code:'CHAT_CHANGED'});};
+    async function read(range,operationId){
+      guard();
+      if(stableStringify(await adapterInstance.currentRef())!==session.refKey)throw Object.assign(new Error('聊天已切换'),{code:'CHAT_CHANGED'});
+      const result=await readProductHostRange(session,{startIndex:range.startIndex,endIndex:range.endIndex,maxMessages,check:guard});
+      guard();
+      if(stableStringify(await adapterInstance.currentRef())!==session.refKey)throw Object.assign(new Error('聊天已切换'),{code:'CHAT_CHANGED'});
+      guard();
+      return createSummaryBatch({scope:session.scope,operationId,expectedRevision:0,messages:cleanMessages(result.messages),
+        requestedRange:result.requestedRange,focusSpec,configVersion:String(PRODUCT_SETTINGS_VERSION),rulesVersion:'product-shell-1',
+        inputBudget:inputBudgetUnits,outputBudget:outputBudgetUnits,outputReserveUnits:0,recordingRules:rules,trigger:'manual'});
+    }
+    function engine(){
+      return new SummaryEngine({repository:repo,model:summaryModel,summaryArmor:summaryPresetFromRules(rules)?.armor,
+        isolateIds:true,packRequests:true,maxInputUnits:inputBudgetUnits,requireFloorSummaries:true,outputReserveUnits:0,now});
+    }
+    const readFrozen=async row=>{
+      const batch=await read(row,row.operationId);
+      if(batch.sourceRevision!==row.parallelSourceRevision)throw Object.assign(new Error('本批正文已变化，请重新预览'),{code:'SOURCE_INVALIDATED'});
+      return batch;
+    };
+    return {
+      signature,recipe,
+      async inspect(range){
+        const batch=await read(range,range.operationId);
+        await engine().checkSingleRequest(batch);
+        return batch.sourceRevision;
+      },
+      async generate(row,{signal,parallelGroup,parallelLimit,onDiagnostic}){
+        const batch=await readFrozen(row);
+        const cached=await repo.readPrivateTask(session.scope,row.operationId);
+        guard();
+        const prior=cached?.parallelDraft;
+        if(prior?.recipe===recipe&&prior.bundle?.sourceRevision===batch.sourceRevision&&prior.bundle.operationId===row.operationId&&
+          prior.hash===sha256(prior.bundle))return {bundle:prior.bundle,requests:0};
+        const result=await engine().process(batch,{signal,parallel:{parallelGroup,parallelLimit},verifyParallelSource:()=>readFrozen(row),onDiagnostic});
+        guard();
+        if(result.status!=='prepared'||result.partialSummary)throw Object.assign(new Error('本批摘要尚未完整，可单独重试'),{code:'COVERAGE_INCOMPLETE'});
+        validate(result.bundle);
+        return result;
+      },
+      async save(row,{bundle,requests}){
+        guard();
+        if(requests){
+          const patch={parallelDraft:{recipe,bundle,hash:sha256(bundle)}};
+          repo.retainPrivateResponse(session.scope,row.operationId,patch);
+          await repo.savePrivateTask(session.scope,row.operationId,patch).catch(()=>{});
+        }
+        guard();
+        const snapshot=await repo.readScope(session.scope,{includeHistory:false,check:guard});
+        if(snapshot.controls?.operations?.[row.operationId]==='active')return;
+        if(snapshot.records.summaryView.some(r=>r.floorIndex>=row.startIndex&&r.floorIndex<=row.endIndex))
+          throw Object.assign(new Error('这些楼层已有新保存的总结，请重新预览缺口'),{code:'REVISION_CONFLICT'});
+        const expectedRevision=snapshot.committedRevision;
+        const rebased={...bundle,expectedRevision};
+        validate(rebased);
+        const proof={operationId:row.operationId,async verify(candidate){
+          guard();
+          if(candidate.expectedRevision!==expectedRevision||candidate.sourceRevision!==row.parallelSourceRevision||
+            stableStringify(candidate.scope)!==stableStringify(session.scope))return null;
+          const batch=await readFrozen(row);guard();return batch.sourceRevision;
+        }};
+        parallelSourceGuard=proof;
+        try{
+          await repo.commitBundle(rebased,{scope:session.scope,expectedRevision,check:guard,controlsPatch:{operations:{[row.operationId]:'active'}}});
+        }finally{if(parallelSourceGuard===proof)parallelSourceGuard=null;}
+      },
+    };
+  }
+
   async function startSummary({ focus = state.focus, confirmedFocus = state.focusConfirmed, trigger = 'manual', requireFloorSummaries = false, operationId = makeId('product-summary'), resume = false, excludeOperations = [], onDiagnostic = () => {}, allowInvalidToolRetry = false } = {}) {
     if (state.status === PRODUCT_SHELL_STATUS.INVALIDATED) return { status: state.status, errorCode: state.errorCode };
     if (!state.session || !repository) return { status: PRODUCT_SHELL_STATUS.UNAVAILABLE, errorCode: state.capabilities.persistence === 'unavailable' ? 'PERSISTENCE_UNAVAILABLE' : 'CHAT_IDENTITY_NOT_READY' };
@@ -536,21 +631,7 @@ export function createProductShellController({
       mark(PRODUCT_SHELL_STATUS.AWAITING_FOCUS, 'FOCUS_REQUIRED', '填写侧重点，或选择按现有偏好开始。');
       return { status: PRODUCT_SHELL_STATUS.AWAITING_FOCUS, errorCode: 'FOCUS_REQUIRED' };
     }
-    let summaryModel;
-    if (!model && !modelFactory) {
-      const profile = {
-        providerEndpoint: state.settings.providerEndpoint,
-        providerEndpointMode: state.settings.providerEndpointMode,
-        providerModel: state.settings.providerModel,
-        providerAuthMode: state.settings.providerAuthMode,
-        deadlineMs: state.settings.summaryDeadlineMs??state.settings.deadlineMs,
-        summaryStreaming:state.settings.summaryStreaming,
-        summaryRequestMode:state.settings.summaryRequestMode,
-        outputBudgetUnits: state.settings.outputBudgetUnits,
-      };
-      transport = transportFactory(profile, { sessionApiKey: state.sessionApiKey ?? '', fetchImpl });
-    }
-    summaryModel = makeModel();
+    const summaryModel = configuredSummaryModel();
     if (!summaryModel) {
       mark(PRODUCT_SHELL_STATUS.UNAVAILABLE, 'MODEL_UNAVAILABLE', '尚未配置可用的总结传输或模型。');
       state.capabilities.summary = 'unavailable';
@@ -984,6 +1065,7 @@ export function createProductShellController({
     readRange,
     setFocus,
     startSummary,
+    prepareParallelSummary,
     cancelSummary,
     previewRecall,
     saveSettings,

@@ -654,7 +654,12 @@ export class SummaryEngine {
     return { request, context, configuredLimit };
   }
 
-  async process(batch, { signal, relevantRecords = null, onProgress = null, onSourcePlan = null, onDiagnostic = () => {}, correctionAuthorizations = [], allowInvalidToolRetry = false } = {}) {
+  async checkSingleRequest(batch,{signal}={}){
+    const [child]=splitSummaryBatch(batch,{groups:[batch.sourceMessages]});
+    await this._prepareRequest(child,batch,{signal,authoritativeRecords:{}});
+  }
+
+  async process(batch, { signal, relevantRecords = null, onProgress = null, onSourcePlan = null, onDiagnostic = () => {}, correctionAuthorizations = [], allowInvalidToolRetry = false, parallel = null, verifyParallelSource } = {}) {
     const emit=(phase,details={},level='info')=>{try{onDiagnostic({phase,level,details:safeLogDetails(details)});}catch{/* log failure must not affect a commit */}};
     const focus = focusGate(batch?.focusSpec);
     if (!focus.confirmed) {
@@ -669,22 +674,22 @@ export class SummaryEngine {
         startedAt: this.now(),
       };
     }
-    const checkpoint = typeof this.repository.getCheckpoint === 'function' ? await this.repository.getCheckpoint(batch.operationId, batch.scope) : null;
-    const frozenPlan = this.packRequests ? await this.repository.readPrivateTask?.(batch.scope, batch.operationId) : null;
+    const checkpoint = !parallel && typeof this.repository.getCheckpoint === 'function' ? await this.repository.getCheckpoint(batch.operationId, batch.scope) : null;
+    const frozenPlan = !parallel && this.packRequests ? await this.repository.readPrivateTask?.(batch.scope, batch.operationId) : null;
     if(frozenPlan?.manualRetryRequired&&frozenPlan.retryModel&&!allowInvalidToolRetry)throw manualToolRetryRequired();
     const contextBinding=value=>sha256({scope:value.scope,sourceRevision:value.sourceRevision,rules:value.rules,focus:value.focusSpec,configVersion:value.configVersion,rulesVersion:value.rulesVersion});
     const initialContextBinding=contextBinding(batch);
-    const initialContextRevision=this.packRequests&&typeof this.repository.getCommittedRevision==='function'?await this.repository.getCommittedRevision(batch.scope):null;
+    const initialContextRevision=!parallel&&this.packRequests&&typeof this.repository.getCommittedRevision==='function'?await this.repository.getCommittedRevision(batch.scope):null;
     const historyStarted=Date.now();
-    let summaryContext=this.packRequests&&this.repository.readSummaryContext&&this.repository.verifySummaryContext&&this.repository.releaseSummaryContext
+    let summaryContext=!parallel&&this.packRequests&&this.repository.readSummaryContext&&this.repository.verifySummaryContext&&this.repository.releaseSummaryContext
       ? await this.repository.readSummaryContext(batch.scope,{check:()=>throwIfAborted(signal)}) : null;
     const releaseContext=()=>{if(summaryContext){this.repository.releaseSummaryContext(summaryContext.token);summaryContext=null;}};
     try {
-    const authoritativeRecords = summaryContext?.records ?? (this.packRequests && this.repository.listRecords ? await this.repository.listRecords(batch.scope) : null);
+    const authoritativeRecords = parallel ? {} : summaryContext?.records ?? (this.packRequests && this.repository.listRecords ? await this.repository.listRecords(batch.scope) : null);
     emit('preparation',{prepareStep:'history_read',elapsedMs:Date.now()-historyStarted,historyRecordCount:Object.values(authoritativeRecords??{}).reduce((n,rows)=>n+(Array.isArray(rows)?rows.length:0),0)});
     let plannedFirstRequest=null;
     const contextReadRevision=initialContextRevision!==null?await this.repository.getCommittedRevision(batch.scope):null;
-    const children = this.packRequests ? await planSummaryRequests(batch, {
+    const children = parallel ? splitSummaryBatch(batch,{groups:[batch.sourceMessages]}) : this.packRequests ? await planSummaryRequests(batch, {
       maxSourceUnits: this.maxSourceUnits ?? this.maxInputUnits,
       frozen: frozenPlan?.requestPlan,
       checkpointPlan: checkpoint?.splitPlan,
@@ -720,7 +725,7 @@ export class SummaryEngine {
       const mismatches = Object.entries(checkpointBinding).filter(([key, expected]) => checkpoint[key] !== undefined && checkpoint[key] !== expected).map(([key, expected]) => ({ key, expected, actual: checkpoint[key] }));
       if (mismatches.length) throw new ScopeConflictError('summary checkpoint binding does not match frozen batch', { mismatches });
     }
-    if (this.packRequests && !frozenPlan?.requestPlan) {
+    if (!parallel && this.packRequests && !frozenPlan?.requestPlan) {
       try { await this.repository.savePrivateTask?.(batch.scope, batch.operationId, {requestPlan:{version:1,sourceRevision:batch.sourceRevision,splitPlan}}); }
       catch (error) { emit('checkpoint_warning',{...errorDiagnostics(error),storageArtifact:'batch-recovery'},'warning'); }
     }
@@ -767,6 +772,7 @@ export class SummaryEngine {
       for(;;){
         if(verifyBeforeRequest)await verifyBeforeRequest();
         throwIfAborted(signal);
+        if(parallel&&childCalls>=1)throw new ShiyiError('本批请求已结束，可单独重试','RECOVERY_LIMIT');
         if(this.verified&&childCalls>=2)throw new ShiyiError('本批两次请求已用完；已返回内容保留，可单独重试未完成复核','RECOVERY_LIMIT');
         const purpose=({ShiyiSummaryVerification:'summary_verification',ShiyiCategoryRepair:'category_repair',ShiyiFloorRepair:'floor_repair',ShiyiSummaryEnumRepair:'enum_repair',ShiyiReferenceRepair:'reference_repair'})[request.kind]??(request.summaryStage==='narrative'?'summary_narrative':request.summaryStage==='details'?'summary_details':'summary');
         const model=request.summaryRole==='supplement'?this.supplementModel:this.model;
@@ -806,7 +812,7 @@ export class SummaryEngine {
         emit('request',{...baseDetails,...(serializedProvider===null?{}:{requestChars:serializedProvider.length,requestBytes:new TextEncoder().encode(serializedProvider).length,...summarySizeDetails(providerPayload,serializedProvider)}),summaryStage:request.summaryStage,modelRole:request.summaryRole??'summary',streaming:providerPayload?.stream===true,sourceInputUnits:providerPayload?._sourceInputUnits??estimateUnits(JSON.stringify(request.sourceMessages??[])),historyInputUnits:estimateUnits(JSON.stringify(request.relevantRecords??{})),schemaInputUnits:estimateUnits(JSON.stringify(wireContract??request.outputContract??{})),bridgeInputUnits:estimateUnits(JSON.stringify(request.bridgeMessages??[])),inputUnits:units,maxTokens:providerPayload?.max_tokens??0,recoveryCalls});
         const started=this.now();state.requests++;childCalls++;
         try{
-          try{return await model(request,{signal,requestId:baseDetails.requestId,purpose,bypassForeground:true});}
+          try{return await model(request,{signal,requestId:baseDetails.requestId,purpose,bypassForeground:true,...(parallel??{})});}
           finally{emit('wait_complete',{...baseDetails,modelMs:Math.max(0,Math.round(this.now()-started))});}
         }
         catch(error){
@@ -838,7 +844,7 @@ export class SummaryEngine {
     for (const child of children) {
       const childIndex = child.childRange.childIndex;
       if (completed.has(childIndex)) continue;
-      verifyBeforeRequest=this.isolateIds&&typeof this.repository.verifySourceRevision==='function'?async()=>{
+      verifyBeforeRequest=parallel?verifyParallelSource:this.isolateIds&&typeof this.repository.verifySourceRevision==='function'?async()=>{
         const actual=await this.repository.verifySourceRevision({scope:clone(child.scope),bundle:child});
         if(actual!==child.sourceRevision)throw new ShiyiError('聊天或正文已变化，后续阶段未调用','SOURCE_INVALIDATED');
       }:null;
@@ -875,7 +881,7 @@ export class SummaryEngine {
         // Release raw historical chunks before waiting on the model. Only the
         // effective records required for validation remain in this operation.
         releaseContext();
-        const { request, context, configuredLimit } = prepared??await this._prepareRequest(child, batch, { relevantRecords,authoritativeRecords:firstContext, signal });
+        const { request, context, configuredLimit } = prepared??await this._prepareRequest(child, batch, { relevantRecords,authoritativeRecords:parallel?{}:firstContext, signal });
         this.requestLog.push({ operationId: child.operationId, parentOperationId: batch.operationId, childIndex, sourceIds: child.sourceMessages.map((message) => message.id) });
         baseDetails.inputLimit=configuredLimit;
         const resultBinding=sha256({sourceRevision:child.sourceRevision,scope:child.scope,rules:child.rules,focus:child.focusSpec,configVersion:child.configVersion});
@@ -1190,7 +1196,7 @@ export class SummaryEngine {
           }
         }
         const repairTargets=repairableEnumTargets(bundle,validation);
-        if(!validation.valid&&repairTargets.length&&!this.verified&&!partialSources){
+        if(!parallel&&!validation.valid&&repairTargets.length&&!this.verified&&!partialSources){
           // A single bounded field-only correction. Normal summaries retain one
           // model call. Source, scope, chronology and coverage rules stay intact.
           const repairRequest=createEnumRepairRequest(bundle,repairTargets,request);
@@ -1256,6 +1262,7 @@ export class SummaryEngine {
         }
         throwIfAborted(signal);
         if(state.partialSummary&&!DRAFT_CATEGORIES.some(k=>k!=='coverage'&&bundle[k]?.length))throw new ValidationError('no source-verified content remains');
+        if(parallel)return {status:'prepared',bundle,requests:state.requests,partialSummary:state.partialSummary};
         phase='commit';emit('commit',baseDetails);
         const receipt = await this.repository.commitBundle(bundle, { scope: child.scope, expectedRevision: child.expectedRevision, sourceRevision: child.sourceRevision });
         state.receipts.push(receipt);
@@ -1294,7 +1301,7 @@ export class SummaryEngine {
         if (error?.name === 'AbortError' || error?.code === 'CANCELED' || signal?.aborted) {
           state.status = 'canceled';
           state.canceledChild = childIndex;
-          if (typeof this.repository.saveCheckpoint === 'function') await this.repository.saveCheckpoint(batch.operationId, {
+          if (!parallel && typeof this.repository.saveCheckpoint === 'function') await this.repository.saveCheckpoint(batch.operationId, {
             status: 'canceled', scope: clone(batch.scope), sourceRevision: batch.sourceRevision, configVersion: String(batch.configVersion), rulesVersion: String(batch.rulesVersion), focusVersion: checkpointBinding.focusVersion, splitPlanFingerprint, splitPlan: clone(splitPlan), completedChildIndexes: [...completed].sort((a, b) => a - b), failedChildIndexes: state.failedChildren, totalChildren: children.length, receipts: clone(state.receipts),
           }).catch(e=>emit('checkpoint_warning',{...errorDiagnostics(e),storageArtifact:'checkpoint'},'warning'));
           throw (error?.name === 'AbortError' ? error : abortError());
@@ -1303,14 +1310,14 @@ export class SummaryEngine {
           state.status = 'partial';
           state.partialChild = childIndex;
           state.unprocessedChildren = [...new Set([...(state.unprocessedChildren ?? []), childIndex])];
-          if (typeof this.repository.saveCheckpoint === 'function') await this.repository.saveCheckpoint(batch.operationId, {
+          if (!parallel && typeof this.repository.saveCheckpoint === 'function') await this.repository.saveCheckpoint(batch.operationId, {
             status: 'partial', scope: clone(batch.scope), sourceRevision: batch.sourceRevision, configVersion: String(batch.configVersion), rulesVersion: String(batch.rulesVersion), focusVersion: checkpointBinding.focusVersion, splitPlanFingerprint, splitPlan: clone(splitPlan), parentRange: clone(batch.parentRange), completedChildIndexes: [...completed].sort((a, b) => a - b), failedChildIndexes: state.failedChildren, partialChildIndexes: state.unprocessedChildren, totalChildren: children.length, receipts: clone(state.receipts), coverage: clone(error.details?.coverage ?? null),
           }).catch(e=>emit('checkpoint_warning',{...errorDiagnostics(e),storageArtifact:'checkpoint'},'warning'));
           throw error;
         }
         state.status = 'failed';
         state.failedChildren.push(childIndex);
-        if (typeof this.repository.saveCheckpoint === 'function') await this.repository.saveCheckpoint(batch.operationId, {
+        if (!parallel && typeof this.repository.saveCheckpoint === 'function') await this.repository.saveCheckpoint(batch.operationId, {
           status: 'failed', scope: clone(batch.scope), sourceRevision: batch.sourceRevision, configVersion: String(batch.configVersion), rulesVersion: String(batch.rulesVersion), focusVersion: checkpointBinding.focusVersion, splitPlanFingerprint, splitPlan: clone(splitPlan), completedChildIndexes: [...completed].sort((a, b) => a - b), failedChildIndexes: state.failedChildren, totalChildren: children.length, receipts: clone(state.receipts), error: { code: error.code, message: error.message },
           }).catch(e=>emit('checkpoint_warning',{...errorDiagnostics(e),storageArtifact:'checkpoint'},'warning'));
         throw error;

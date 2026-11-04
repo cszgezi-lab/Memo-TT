@@ -150,7 +150,8 @@ async function readBatches(view,{check:parentCheck,rows}={}){
       const scheduled=item.status==='queued'&&item.freshStart;
       const cutoff=view.controls?.automation?.summaryHold;
       const abandonedTail=Boolean(cutoff&&item.replacement&&cutoff.id===item.replacement.id&&item.endIndex>cutoff.endIndex);
-      const status=abandonedTail?'deleted':scheduled?'queued':mode==='active'?'saved':mode==='deleted'?'deleted':item.status==='running'&&appScope.activeSummaryBatchId!==item.id?'interrupted':item.status;
+      const running=appScope.activeSummaryBatchId===item.id||appScope.activeSummaryOperation?.parallelBatchIds?.has(item.id);
+      const status=abandonedTail?'deleted':scheduled?'queued':mode==='active'?'saved':mode==='deleted'?'deleted':item.status==='running'&&!running?'interrupted':item.status;
       return {...item,status,...(!scheduled&&mode==='active'?{error:null,savedOperationId:item.operationId}:{}),records,counts:Object.fromEntries(MEMORY_CATEGORIES.map(k=>[k,records[k].length]))};
     });
     if(view.controls?.automation?.summaryHold){

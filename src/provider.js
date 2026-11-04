@@ -219,7 +219,7 @@ export class ProviderClient {
     this.modelRole=modelRole;
   }
 
-  async request(resource, payload, { signal, timeoutMs, headers = {}, method = 'POST', requestId=diagnosticRequestId(), purpose, onDiagnostic, rpmLimit=0, minIntervalMs=0,bypassForeground=false,allowUnmarkedJson=false } = {}) {
+  async request(resource, payload, { signal, timeoutMs, headers = {}, method = 'POST', requestId=diagnosticRequestId(), purpose, onDiagnostic, rpmLimit=0, minIntervalMs=0,bypassForeground=false,allowUnmarkedJson=false,parallelGroup,parallelLimit } = {}) {
     const started=Date.now(),observer=onDiagnostic??observers.get(this.fetch);let finished=false;
     const emit=(phase,details={},level='info')=>{if(finished)return;try{observer?.({phase,level,details:{requestId,purpose:purpose??resource,modelRole:this.modelRole,elapsedMs:Date.now()-started,...details}});}catch{/* diagnostics never fail a request */}};
     const serialized=JSON.stringify(payload??{});
@@ -229,7 +229,7 @@ export class ProviderClient {
       const scheduler=resource==='chat'?schedulers.get(this.fetch):null;
       if(scheduler){
         const limits=[Number(rpmLimit),...(this.modelRole==='personaReview'?[5]:[])].filter(value=>Number.isFinite(value)&&value>0);
-        lease=await scheduler.acquire(providerQueueScope(resolveProviderEndpoint(this.profile,resource),buildProviderHeaders(this.profile,headers)),{signal,onWait:details=>emit('queued',details),rpmLimit:limits.length?Math.min(...limits):0,minIntervalMs,bypassForeground,...(this.modelRole==='personaReview'?{priority:-1}:{})});
+        lease=await scheduler.acquire(providerQueueScope(resolveProviderEndpoint(this.profile,resource),buildProviderHeaders(this.profile,headers)),{signal,onWait:details=>emit('queued',details),rpmLimit:limits.length?Math.min(...limits):0,minIntervalMs,bypassForeground,...(this.modelRole==='summary'&&purpose==='summary'?{parallelGroup,parallelLimit}:{}),...(this.modelRole==='personaReview'?{priority:-1}:{})});
       }
       networkStarted=Date.now();
       emit('request',{stage:'request',...requestMeta,queueWaitMs:lease?.queueWaitMs??0,maxTokens:payload?.max_tokens??0,timeoutMs:timeoutMs??this.profile.timeoutMs});

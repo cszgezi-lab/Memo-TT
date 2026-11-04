@@ -580,7 +580,9 @@ export class MemoryRepository {
     expectedRevision = bundle?.expectedRevision,
     sourceRevision = bundle?.sourceRevision,
     controlsPatch = null,
+    check = () => {},
   } = {}) {
+    check();
     const frozenScope = normalizeScope(scope);
     const binding = { scope: frozenScope, operationId: bundle?.operationId, expectedRevision };
     const operationId = bundle.operationId;
@@ -659,7 +661,7 @@ export class MemoryRepository {
         scopeKey: scopeKey(frozenScope),
         committedRevision: revision,
         chunks: [...(previous.manifest?.chunks ?? []), { key: chunkKey, sha256: chunkHash }],
-        ...((previous.manifest?.controls||controlsPatch)?{controls:Object.fromEntries(['operations','deletedRecords','edits'].map(key=>[key,{...clone(previous.manifest?.controls?.[key]??{}),...clone(controlsPatch?.[key]??{})}]))}:{}),
+        ...((previous.manifest?.controls||controlsPatch)?{controls:{...clone(previous.manifest?.controls??{}),...Object.fromEntries(['operations','deletedRecords','edits'].map(key=>[key,{...clone(previous.manifest?.controls?.[key]??{}),...clone(controlsPatch?.[key]??{})}]))}}:{}),
         operationId,
         sourceRevision,
         bundleHash,
@@ -690,6 +692,7 @@ export class MemoryRepository {
         bundleHash,
         updatedAt: this.now(),
       };
+      check();
       await verifiedWrite(this.store,{namespace:this.namespace,key:keys.pointer},pointer);
       const receipt = {
         schemaVersion: 1,
