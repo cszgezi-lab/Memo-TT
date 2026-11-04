@@ -12,6 +12,8 @@ import { runStorageOperation } from '../reliable-storage.js';
 /** summary orchestration. Dependencies are limited by service-contracts.js. */
 export function createSummaryService(appScope) {
 let parallelPreview=null;
+const batchActions=[];
+let drainingBatchActions=false;
 async function prepareSummaryChat(){
     if(appScope.following)await appScope.following;
     if(appScope.active||appScope.opening)throw new Error('已有任务正在运行，请等待完成或停止');
@@ -38,6 +40,68 @@ const parallelSelection=options=>[options.count,options.startIndex,options.endIn
 const overlaps=(a,b)=>a.startIndex<=b.endIndex&&a.endIndex>=b.startIndex;
 const unfinished=b=>['queued','running','failed','interrupted'].includes(b.status);
 const batchFingerprint=rows=>rows.map(b=>[b.id,b.startIndex,b.endIndex,b.status,b.operationId,b.savedOperationId,b.partialSummary?.savedFloors,b.focus,b.parallelSourceRevision,b.parallelRecipe,b.replacement?.id]);
+
+function batchActionSettings(){
+    const settings=appScope.core.settings;
+    return sha256([appScope.summaryRecipeHash(),...['providerEndpoint','providerEndpointMode','providerModel','providerAuthMode',
+      'summaryRequestMode','summaryStreaming','summaryStaged','summaryReviewEnabled','inputBudgetUnits','outputBudgetUnits'].map(key=>settings[key])]);
+  }
+
+function finishBatchAction(entry){
+    const index=batchActions.indexOf(entry);
+    if(index<0)return;
+    batchActions.splice(index,1);
+    entry.op.signal.removeEventListener('abort',entry.cancel);
+    appScope.state.queuedBatchActions=batchActions.flatMap(item=>item.ids.map(id=>({id,action:item.action})));
+    entry.op.finish();
+  }
+
+function queueBatchAction(ids,action,options={}){
+    appScope.assertCurrent();
+    const rows=[...new Set(ids)].map(id=>appScope.state.batches.find(b=>b.id===id));
+    if(!rows.length||rows.some(b=>!b||b.status==='deleted'||b.replacedBy||!Number.isInteger(b.startIndex)||!Number.isInteger(b.endIndex)))
+      throw new Error('请选择可处理的批次');
+    if(rows.some(b=>b.status==='running'||b.id===appScope.activeSummaryBatchId||appScope.activeSummaryOperation?.parallelBatchIds?.has(b.id)))
+      return {status:'running',requests:0,level:'info'};
+    if(rows.some(b=>batchActions.some(entry=>entry.ids.includes(b.id))))return {status:'queued',requests:0,level:'info'};
+    const op=appScope.begin(false);
+    const entry={ids:rows.map(b=>b.id),action,options:{...options},settings:batchActionSettings(),
+      fingerprint:stableStringify(batchFingerprint(rows)),op};
+    entry.cancel=()=>finishBatchAction(entry);
+    batchActions.push(entry);
+    op.signal.addEventListener('abort',entry.cancel,{once:true});
+    appScope.state.queuedBatchActions=batchActions.flatMap(item=>item.ids.map(id=>({id,action:item.action})));
+    appScope.summaryFeedback('info',`${action==='regenerate'?'重新生成':'重试'} ${rows.length} 批已排队，当前任务结束后处理。`,'manual');
+    wakeBatchActions();
+    return {status:'queued',requests:0,level:'info'};
+  }
+
+function wakeBatchActions(){
+    if(drainingBatchActions||!batchActions.length||appScope.active||appScope.opening)return;
+    drainingBatchActions=true;
+    void (async()=>{
+      while(batchActions.length&&!appScope.active&&!appScope.opening){
+        const entry=batchActions[0];
+        try{
+          entry.op.check();
+          await appScope.refresh({check:entry.op.check});entry.op.check();
+          if(appScope.active||appScope.opening)break;
+          const rows=entry.ids.map(id=>appScope.state.batches.find(b=>b.id===id));
+          if(rows.some(b=>!b)||stableStringify(batchFingerprint(rows))!==entry.fingerprint||batchActionSettings()!==entry.settings)
+            throw new Error('排队批次或总结设置已变化，请重新选择');
+          if(entry.ids.length===1&&!entry.options.parallelOnly){
+            const action=entry.action==='regenerate'?regenerateBatch:retryBatch;
+            await action(entry.ids[0],{check:entry.op.check,dispatchQueued:true});
+          }else await manageBatchesTask(entry.ids,entry.action,{...entry.options,dispatchQueued:true},entry.op.check);
+        }catch(error){
+          if(!entry.op.signal.aborted&&error.code!=='CHAT_CHANGED'){
+            appScope.summaryFeedback('warning',`排队操作未完成：${failureText(error)}`,'manual');
+          }
+        }
+        finishBatchAction(entry);
+      }
+    })().finally(()=>{drainingBatchActions=false;wakeBatchActions();});
+  }
 
 function parallelRuntimes(check){
     const runtimes=new Map();
@@ -420,7 +484,8 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
     }finally{if(appScope.activeSummaryOperation===op){appScope.activeSummaryOperation=null;appScope.activeSummaryBatchId=null;}op.finish();}
   }
 
-async function regenerateBatch(id,{trigger='manual',check:parentCheck}={}){
+async function regenerateBatch(id,{trigger='manual',check:parentCheck,dispatchQueued=false}={}){
+    if(!dispatchQueued&&trigger==='manual'&&(appScope.active||batchActions.length))return queueBatchAction([id],'regenerate');
     const check=appScope.continuationCheck(parentCheck);check();const rows=await appScope.workspace.read('summary-batches',[]);check();const row=rows.find(b=>b.id===id);
     if(!row)throw new Error('批次不存在');
     if(row.replacedBy||row.status==='deleted'&&rows.some(b=>b.id!==row.id&&b.status==='saved'&&b.startIndex<=row.endIndex&&b.endIndex>=row.startIndex))throw new Error('旧批次已被范围覆盖，请从手动总结选择需要重新覆盖的范围');
@@ -429,8 +494,9 @@ async function regenerateBatch(id,{trigger='manual',check:parentCheck}={}){
     return summarize({startIndex:row.startIndex,endIndex:row.endIndex,batchSize:row.endIndex-row.startIndex+1,focus:row.focus,replaceBatchId:id,trigger,rebuildCandidate:Boolean(row.replacement&&row.status!=='saved'&&row.status!=='deleted')});
   }
 
-async function retryBatch(id,{check:parentCheck,explicit=true}={}){
+async function retryBatch(id,{check:parentCheck,explicit=true,dispatchQueued=false}={}){
     const check=appScope.continuationCheck(parentCheck);check();
+    if(!dispatchQueued&&explicit&&(appScope.active||batchActions.length))return queueBatchAction([id],'retry');
     // A stale retry button can be clicked again before the busy UI paints.
     // Keep the current operation (and its progress) intact; never start a twin.
     // The skip stays silent to the caller but tells the user why nothing ran.
@@ -450,7 +516,7 @@ async function retryBatch(id,{check:parentCheck,explicit=true}={}){
       const recovery=await appScope.core.inspectSummaryResume(row.operationId,{focus:row.focus});check();
       if((!recovery.frozen||recovery.revisionChanged)&&!recovery.hasCachedResponse&&!recovery.hasCommittedChildren){
         appScope.summaryFeedback('info','其它批次已保存，本批尚无可复用的成功答复；正在单独重试此批，已成功批次保留。','manual');
-        return regenerateBatch(id,{trigger:row.trigger??'manual',check});
+        return regenerateBatch(id,{trigger:row.trigger??'manual',check,dispatchQueued});
       }
     }
     if(row.replacementReady&&row.replacement){
@@ -544,7 +610,9 @@ async function applySummaryPrefix(id,{previewHash}={}){
   }
 
 async function manageBatches(ids,action,options={}){
-    appScope.assertCurrent();if(appScope.active)throw new Error('请先停止总结');
+    appScope.assertCurrent();
+    if(['retry','regenerate'].includes(action)&&(appScope.active||batchActions.length))return queueBatchAction(ids,action,options);
+    if(appScope.active)throw new Error('请先停止总结');
     if(!['delete','restore'].includes(action))return manageBatchesTask(ids,action,options,appScope.continuationCheck());
     const op=appScope.begin();
     appScope.setMessage(`${action==='delete'?'正在撤下':'正在恢复'}所选批次；等待存储确认，可停止等待`);
@@ -587,10 +655,11 @@ async function manageBatchesTask(ids,action,options,check){
         const result=await summarize({...request,previewHash:preview.previewHash});
         return {...result,processed:result.batches,failed:result.failed??0};
       }
+      if(options.parallelOnly)throw new Error('请选择独立的并行批次');
       let failed=0,processed=0;
       for(const row of targets.sort((a,b)=>a.startIndex-b.startIndex)){
         appScope.assertCurrent(token);if(version!==appScope.cancelVersion)throw new Error('已停止');
-        try{await (action==='retry'?retryBatch(row.id):regenerateBatch(row.id));processed++;}
+        try{await (action==='retry'?retryBatch(row.id,{check,dispatchQueued:options.dispatchQueued}):regenerateBatch(row.id,{check,dispatchQueued:options.dispatchQueued}));processed++;}
         catch(error){if(action!=='retry'||version!==appScope.cancelVersion||['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(error.code))throw error;failed++;}
       }
       await appScope.refresh();const pending=action==='retry'?appScope.state.batches.filter(b=>selected.includes(b.id)&&!['saved','deleted'].includes(b.status)).length:0;
@@ -637,5 +706,5 @@ async function manageBatchesTask(ids,action,options,check){
 async function deleteBatch(id,options={}){return manageBatches([id],'delete',options);}
 
 async function restoreBatch(id){return manageBatches([id],'restore');}
-  return Object.freeze({ prepareSummaryChat, previewSummary, summarize, regenerateBatch, retryBatch, retryIncompleteBatches, splitSummaryBatch, previewApplySummaryPrefix, applySummaryPrefix, manageBatches, deleteBatch, restoreBatch });
+  return Object.freeze({ prepareSummaryChat, previewSummary, summarize, regenerateBatch, retryBatch, retryIncompleteBatches, splitSummaryBatch, previewApplySummaryPrefix, applySummaryPrefix, manageBatches, deleteBatch, restoreBatch, wakeBatchActions });
 }

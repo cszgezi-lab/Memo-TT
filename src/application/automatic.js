@@ -82,7 +82,7 @@ function queueAutomaticSummary(messageId){
   }
 
 function summaryHeld(){return Boolean(appScope.state.summaryHold);}
-function unfinishedManualSummary(){return appScope.state.batches.some(batch=>(batch.replacement||batch.parallelBatch)&&['queued','running','failed','interrupted'].includes(batch.status)&&batch.trigger!=='auto'&&!hasNewerSavedCoverage(batch,appScope.state.batches));}
+function unfinishedManualSummary(){return Boolean(appScope.state.queuedBatchActions?.length)||appScope.state.batches.some(batch=>(batch.replacement||batch.parallelBatch)&&['queued','running','failed','interrupted'].includes(batch.status)&&batch.trigger!=='auto'&&!hasNewerSavedCoverage(batch,appScope.state.batches));}
 
 function wakeAutomaticSummary(){
     if(!appScope.autoPending||appScope.autoTimer!==null||appScope.autoTask||appScope.active||appScope.opening||appScope.disposed||appScope.followPending||appScope.following||appScope.state.stale||appScope.automaticPaused||summaryHeld()||appScope.currentMemoryMutation()||unfinishedManualSummary()||!appScope.enabled||!appScope.core.settings.autoSummaryEnabled||!appScope.apiConnectionReady('summary')||appScope.host.document?.visibilityState==='hidden'||!appScope.workspace?.isCurrent())return;

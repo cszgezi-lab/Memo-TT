@@ -16,7 +16,7 @@ function begin(exclusive = true) {
     appScope.operations.add(controller); if (exclusive) appScope.active = controller;
     return { signal: controller.signal, workspace: bound, token, abort:()=>controller.abort(),
       check() { if (controller.signal.aborted || version !== appScope.cancelVersion) throw Object.assign(new Error('已停止'),{code:'CANCELED'}); assertCurrent(token); },
-      finish() { appScope.operations.delete(controller); if (appScope.active === controller) appScope.active = null; appScope.notify(); appScope.wakeChatFollower(); appScope.wakeAutomaticSummary(); appScope.wakeVectors(); } };
+      finish() { appScope.operations.delete(controller); if (appScope.active === controller) appScope.active = null; appScope.notify(); appScope.wakeBatchActions(); appScope.wakeChatFollower(); appScope.wakeAutomaticSummary(); appScope.wakeVectors(); } };
   }
 
 function abortAll() {

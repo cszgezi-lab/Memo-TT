@@ -8,7 +8,7 @@ export const APPLICATION_SERVICE_CONTRACTS = Object.freeze({
   }),
   operations: Object.freeze({
     provides: Object.freeze(["assertCurrent","continuationCheck","begin","abortAll","beginApi","currentMemoryMutation","beginMemoryMutation","trackedMemoryMutation"]),
-    requires: Object.freeze(["recallChanged","wakeAutomaticSummary","wakeChatFollower","wakeVectors"]),
+    requires: Object.freeze(["recallChanged","wakeAutomaticSummary","wakeBatchActions","wakeChatFollower","wakeVectors"]),
     reads: Object.freeze(["active","activeSummaryBatchId","activeSummaryOperation","apiOperations","autoHistoryAttempts","autoHistoryMessageId","autoHistorySource","autoPending","autoRetryAt","autoRunOwner","autoRunning","autoTask","autoTaskOwner","autoTimer","cancelVersion","disposed","epoch","memoryMutationGuards","memoryMutationKey","notify","operations","qualityOperation","workspace"]),
     writes: Object.freeze(["active","activeSummaryBatchId","activeSummaryOperation","autoHistoryAttempts","autoHistoryMessageId","autoHistorySource","autoPending","autoRetryAt","autoRunOwner","autoRunning","autoTask","autoTaskOwner","autoTimer","cancelVersion"])
   }),
@@ -37,7 +37,7 @@ export const APPLICATION_SERVICE_CONTRACTS = Object.freeze({
     writes: Object.freeze(["autoInvalidSources","committedRecall","mergeDecisions","qualitySaved","recallBusy","retrospectiveSaved","sourcePrefixVerified"])
   }),
   summary: Object.freeze({
-    provides: Object.freeze(["prepareSummaryChat","previewSummary","summarize","regenerateBatch","retryBatch","retryIncompleteBatches","splitSummaryBatch","previewApplySummaryPrefix","applySummaryPrefix","manageBatches","deleteBatch","restoreBatch"]),
+    provides: Object.freeze(["prepareSummaryChat","previewSummary","summarize","regenerateBatch","retryBatch","retryIncompleteBatches","splitSummaryBatch","previewApplySummaryPrefix","applySummaryPrefix","manageBatches","deleteBatch","restoreBatch","wakeBatchActions"]),
     requires: Object.freeze(["assertCurrent","begin","beginMemoryMutation","continuationCheck","logged","open","processMergeQueue","queueAutomaticQuality","readBatches","refresh","reportError","setMessage","summaryFeedback","summaryMonitor","syncAutoStartFloor","trackedMemoryMutation","validAutomaticBatches"]),
     reads: Object.freeze(["active","activeSummaryBatchId","activeSummaryOperation","autoRunOwner","boundRefKey","cancelVersion","core","enabled","epoch","feedbackSequence","following","host","hostAdapter","notify","opening","overwriteHash","qualitySaved","replacementEditsHash","runtimeLog","state","summaryRecipeHash","workspace"]),
     writes: Object.freeze(["activeSummaryBatchId","activeSummaryOperation","feedbackSequence","hostAdapter","workspace"])
