@@ -1,7 +1,7 @@
 import {MAX_PARALLEL_SUMMARY_BATCHES,shouldPauseProviderBatch} from '../provider-scheduler.js';
 import { HostAdapter } from '../host-adapter.js';
 import { sha256, makeId, stableStringify } from '../utils.js';
-import { numberedSummaryBatches, planSummaryRanges, batchRecords, MEMORY_CATEGORIES, batchOperationIds, sameBatchRange, savedBatchOperation, summaryOverwritePlan, canRetryInParallel } from '../product-batches.js';
+import { numberedSummaryBatches, planSummaryRanges, batchRecords, MEMORY_CATEGORIES, batchOperationIds, sameBatchRange, savedBatchOperation, summaryOverwritePlan, canRetryInParallel, canRegenerateInParallel } from '../product-batches.js';
 import { failureText } from '../product-feedback.js';
 import { createWorkspace } from '../product-workspace.js';
 import { summaryCoverage, missingSummaryRanges, retireIncompleteSyncTails } from '../product-auto-summary.js';
@@ -13,6 +13,7 @@ import { runStorageOperation } from '../reliable-storage.js';
 export function createSummaryService(appScope) {
 let parallelPreview=null;
 let manualPreview=null;
+let activeParallel=null;
 const batchActions=[];
 let drainingBatchActions=false;
 async function prepareSummaryChat({preview=false}={}){
@@ -42,10 +43,11 @@ async function previewSummary(options={}){
     return {...plan,previewHash,waiting:Boolean(appScope.active||batchActions.length)};
   }
 
-const parallelSelection=options=>[options.count,options.startIndex,options.endIndex,options.batchSize,options.focus??'',options.parallelConcurrency,options.retryBatchIds];
+const parallelSelection=options=>[options.count,options.startIndex,options.endIndex,options.batchSize,options.focus??'',options.parallelConcurrency,options.retryBatchIds,options.regenerateBatchIds];
 const overlaps=(a,b)=>a.startIndex<=b.endIndex&&a.endIndex>=b.startIndex;
 const unfinished=b=>['queued','running','failed','interrupted'].includes(b.status);
-const batchFingerprint=rows=>rows.map(b=>[b.id,b.startIndex,b.endIndex,b.status,b.operationId,b.savedOperationId,b.partialSummary?.savedFloors,b.focus,b.parallelSourceRevision,b.parallelRecipe,b.replacement?.id]);
+const batchFingerprint=rows=>rows.map(b=>[b.id,b.startIndex,b.endIndex,b.status,b.operationId,b.savedOperationId,b.partialSummary?.savedFloors,b.focus,b.parallelSourceRevision,b.parallelRecipe,b.replacement?.id,b.parallelRegeneration]);
+const parallelFootprint=(rows,requested,selected)=>rows.filter(b=>selected?selected.some(row=>overlaps(b,row)):overlaps(b,requested));
 
 function batchActionSettings(){
     const settings=appScope.core.settings;
@@ -54,7 +56,7 @@ function batchActionSettings(){
   }
 
 function showBatchQueue(){
-    appScope.state.queuedBatchActions=batchActions.flatMap(item=>(item.ids??[]).map(id=>({id,action:item.action})));
+    appScope.state.queuedBatchActions=batchActions.flatMap(item=>(item.ids??[]).map(id=>({id,action:item.batchAction??item.action})));
     appScope.state.queuedSummaryPlans=batchActions.filter(item=>item.action==='summary').map(({requested,plannedBatches,parallel})=>({requested,plannedBatches,parallel}));
   }
 
@@ -90,23 +92,24 @@ function queueBatchAction(ids,action,options={}){
       `${action==='regenerate'?'重新生成':'重试'} ${rows.length} 批已排队，当前任务结束后处理。`);
   }
 
-function queueManualSummary(options){
-    const parallel=options.parallelConcurrency!==undefined,preview=parallel?parallelPreview:manualPreview;
+function queueManualSummary(options,suppliedPlan=null){
+    const parallel=options.parallelConcurrency!==undefined,preview=suppliedPlan??(parallel?parallelPreview:manualPreview);
     if(!preview||!options.previewHash||options.previewHash!==preview.previewHash||
       stableStringify(preview.selection)!==stableStringify(parallelSelection(options))||!parallel&&preview.settings!==batchActionSettings())
       throw new Error('请重新预览待排队的总结范围');
     preview.check();
     const {requested}=preview,plannedBatches=parallel?preview.planned.length:preview.plannedBatches;
     if(!plannedBatches)return {status:'complete',batches:0,requests:0};
-    const submission=sha256([requested,options.focus??'',options.batchSize,options.parallelConcurrency]);
+    const ids=preview.selectedRows?preview.planned.map(row=>row.id):null;
+    const submission=sha256([requested,options.focus??'',options.batchSize,options.parallelConcurrency,ids]);
     if(appScope.activeSummaryOperation?.submission===submission||batchActions.some(entry=>entry.submission===submission)){
       appScope.summaryFeedback('info','相同范围的总结已在处理队列中。','manual');
       return {status:'queued',requests:0,level:'info'};
     }
-    if(parallel)parallelPreview=null;
-    else manualPreview=null;
+    if(!suppliedPlan){if(parallel)parallelPreview=null;else manualPreview=null;}
     const frozen=parallel?{...options}:{...options,...requested};
-    return addBatchAction({action:'summary',options:frozen,plan:parallel?preview:null,parallel,requested,plannedBatches,submission},
+    return addBatchAction({action:'summary',ids,batchAction:ids?(preview.regenerate?'regenerate':'retry'):null,
+      options:frozen,plan:parallel?preview:null,parallel,requested,plannedBatches,submission},
       `已排队 ${requested.startIndex}–${requested.endIndex} 楼，共 ${plannedBatches} 批。当前任务结束后处理。`);
   }
 
@@ -154,7 +157,7 @@ function parallelRuntimes(check,{previewOnly=false}={}){
     };
   }
 
-async function previewParallel(options){
+async function buildParallelPlan(options){
     await prepareSummaryChat({preview:true});
     const check=appScope.continuationCheck();
     const concurrency=options.parallelConcurrency;
@@ -164,24 +167,29 @@ async function previewParallel(options){
     if(!appScope.active)await appScope.refresh({check});check();
     const allRows=appScope.active?await appScope.workspace.read('summary-batches',[],{check}):appScope.state.batches;
     check();
-    let retryRows=null;
-    if(options.retryBatchIds!==undefined){
-      if(!Array.isArray(options.retryBatchIds)||!options.retryBatchIds.length)throw new Error('请选择要重试的批次');
-      retryRows=[...new Set(options.retryBatchIds)].map(id=>allRows.find(b=>b.id===id));
-      if(retryRows.some(b=>!b||b.status!=='saved'&&!canRetryInParallel(b)))throw new Error('请分开选择并行批次和顺序批次');
-      retryRows=retryRows.filter(canRetryInParallel);
-      if(!retryRows.length)return {concurrency,plannedBatches:0,maxRequests:0,ranges:[]};
-      retryRows.sort((a,b)=>a.startIndex-b.startIndex);
+    let selectedRows=null;
+    const regenerate=options.regenerateBatchIds!==undefined;
+    const ids=regenerate?options.regenerateBatchIds:options.retryBatchIds;
+    if(ids!==undefined){
+      if(!Array.isArray(ids)||!ids.length)throw new Error('请选择要处理的批次');
+      selectedRows=[...new Set(ids)].map(id=>allRows.find(b=>b.id===id));
+      if(selectedRows.some(b=>regenerate?!canRegenerateInParallel(b):!b||b.status!=='saved'&&!canRetryInParallel(b)))
+        throw new Error('请分开选择并行批次和顺序批次');
+      if(!regenerate)selectedRows=selectedRows.filter(canRetryInParallel);
+      if(!selectedRows.length)return {view:{concurrency,plannedBatches:0,maxRequests:0,ranges:[]}};
+      selectedRows.sort((a,b)=>a.startIndex-b.startIndex);
     }
-    const selected=retryRows??planSummaryRanges({...options,count:options.count??appScope.core.settings.messageCount,lastIndex,batchSize});
+    const selected=selectedRows??planSummaryRanges({...options,count:options.count??appScope.core.settings.messageCount,lastIndex,batchSize});
     const requested={startIndex:selected[0].startIndex,endIndex:selected.reduce((end,row)=>Math.max(end,row.endIndex),0)};
-    const rows=allRows.filter(b=>overlaps(b,requested));
+    const rows=parallelFootprint(allRows,requested,selectedRows);
     const coverage=summaryCoverage(rows,{startFloor:requested.startIndex,lastIndex:requested.endIndex,keepRecent:0,batchSize});
-    const retryTargets=retryRows;
+    const retryTargets=selectedRows;
     const pending=rows.filter(b=>unfinished(b)&&coverage.missingRanges.some(r=>overlaps(b,r))&&(!retryTargets||retryTargets.some(r=>overlaps(b,r))));
     if(pending.some(b=>!b.parallelBatch&&(b.operationId||b.replacement)))throw new Error('选区有原先未完成的总结。请在批次列表重试或撤下原批次，再并行补缺口。');
     const prior=retryTargets??pending.filter(b=>b.parallelBatch);
-    if(prior.some(b=>!coverage.missingRanges.some(r=>b.startIndex>=r.startIndex&&b.endIndex<=r.endIndex)))
+    if(prior.some(b=>(regenerate||b.parallelRegeneration)&&savedBatchOperation(b)
+      ?rows.some(other=>other.id!==b.id&&savedBatchOperation(other)&&overlaps(b,other))
+      :!coverage.missingRanges.some(r=>b.startIndex>=r.startIndex&&b.endIndex<=r.endIndex)))
       throw new Error('选区切到了未完成的并行批次。请选完整批次，或从批次列表单独重试。');
     const gaps=retryTargets?retryTargets.map(row=>({startIndex:row.startIndex,endIndex:row.endIndex,prior:row})):coverage.missingRanges.flatMap(gap=>{
       const within=prior.filter(b=>overlaps(gap,b)).sort((a,b)=>a.startIndex-b.startIndex);
@@ -203,7 +211,7 @@ async function previewParallel(options){
       const prior=range.prior;
       const focus=(retryTargets?prior.focus:options.focus)??'';
       const runtime=runtimes.get(focus);
-      let operationId=prior?.operationId??makeId('product-summary');
+      let operationId=regenerate?makeId('product-summary'):prior?.operationId??makeId('product-summary');
       let sourceRevision;
       try{sourceRevision=await runtime.inspect({...range,operationId});}
       catch(error){
@@ -214,7 +222,11 @@ async function previewParallel(options){
         return;
       }
       if(prior&&(prior.parallelRecipe!==runtime.recipe||prior.parallelSourceRevision!==sourceRevision))operationId=makeId('product-summary');
+      const oldOperation=regenerate?savedBatchOperation(prior):prior?.parallelRegeneration;
+      const attempts=prior?batchOperationIds(prior).filter(id=>id!==operationId&&id!==oldOperation):[];
       planned.push({id:prior?.id??makeId('summary-batch'),operationId,startIndex:range.startIndex,endIndex:range.endIndex,
+        ...(oldOperation?{savedOperationId:oldOperation,previousOperation:oldOperation,parallelRegeneration:oldOperation}:{}),
+        ...(attempts.length?{attempts}:{}),
         parallelBatch:true,parallelRecipe:runtime.recipe,parallelSourceRevision:sourceRevision,focus,trigger:'manual',
         status:'queued',freshStart:true,createdAt:prior?.createdAt??Date.now(),error:null});
     }
@@ -222,88 +234,146 @@ async function previewParallel(options){
     check();
     const selection=parallelSelection(options),fingerprint=batchFingerprint(rows),signature=runtimes.signatures();
     const previewHash=sha256([appScope.workspace.scope,requested,selection,fingerprint,planned,signature]);
-    parallelPreview={previewHash,requested,selection,fingerprint,signature,planned,concurrency,retry:Boolean(retryTargets),check};
-    return {previewHash,requested,concurrency,plannedBatches:planned.length,maxRequests:planned.length,
-      ranges:planned.map(({startIndex,endIndex})=>({startIndex,endIndex})),coveredFloors:coverage.coveredFloors,waiting:Boolean(appScope.active||batchActions.length)};
+    const plan={previewHash,requested,selection,fingerprint,signature,planned,concurrency,selectedRows:Boolean(selectedRows),
+      retry:Boolean(retryTargets)&&!regenerate,regenerate,check};
+    const joinsParallel=Boolean(selectedRows&&activeParallel?.canJoin(planned));
+    return {plan,view:{previewHash,requested,concurrency:joinsParallel?activeParallel.concurrency:concurrency,plannedBatches:planned.length,maxRequests:planned.length,
+      ranges:planned.map(({startIndex,endIndex})=>({startIndex,endIndex})),coveredFloors:coverage.coveredFloors,
+      joinsParallel,waiting:Boolean(appScope.active||batchActions.length)&&!joinsParallel}};
+  }
+
+async function previewParallel(options){
+    const {plan,view}=await buildParallelPlan(options);
+    parallelPreview=plan;
+    return view;
+  }
+
+function assertParallelPlan(plan,options){
+    if(!plan||plan.previewHash!==options.previewHash||stableStringify(plan.selection)!==stableStringify(parallelSelection(options)))
+      throw new Error('请重新预览并行批次');
+    plan.check();
   }
 
 async function runParallel(options,diagnosticRun,queuedPlan=null){
     await prepareSummaryChat();
-    const op=appScope.begin(),plan=queuedPlan??parallelPreview;
+    const plan=queuedPlan??parallelPreview;
     if(!queuedPlan)parallelPreview=null;
-    if(plan)op.submission=sha256([plan.requested,options.focus??'',options.batchSize,options.parallelConcurrency]);
+    assertParallelPlan(plan,options);
+    if(!plan.planned.length)return {status:'complete',batches:0,requests:0};
+    const op=appScope.begin(),concurrency=plan.concurrency,group=makeId('summary-parallel');
+    op.submission=sha256([plan.requested,options.focus??'',options.batchSize,options.parallelConcurrency,plan.selectedRows?plan.planned.map(row=>row.id):null]);
     op.parallelBatchIds=new Set();
-    op.monitor={trigger:'manual',phase:'preparing',completedBatches:0,totalBatches:plan?.planned.length??0,requestNumber:0,
-      ...plan?.requested};
+    op.monitor={trigger:'manual',phase:'preparing',completedBatches:0,totalBatches:0,requestNumber:0,...plan.requested};
     appScope.activeSummaryOperation=op;
-    let saved=0,requests=0,cursor=0,failed=0,pauseError=null,saveTail=Promise.resolve();
+    const jobs=[],reservations=new Set(),workers=new Set(),admissions=new Set();
+    let saved=0,requests=0,cursor=0,failed=0,pauseError=null,saveTail=Promise.resolve(),accepting=true;
     const check=()=>op.check();
     const saveRow=async row=>{
       await op.workspace.update('summary-batches',rows=>rows.map(b=>b.id===row.id&&b.operationId===row.operationId?row:b),[],{check});
       appScope.state.batches=appScope.state.batches.map(b=>b.id===row.id?{...b,...row}:b);
       appScope.notify();
     };
-    try{
-      if(!plan||plan.previewHash!==options.previewHash||stableStringify(plan.selection)!==stableStringify(parallelSelection(options)))
-        throw new Error('请重新预览并行批次');
-      plan.check();
-      if(!plan.planned.length)return {status:'complete',batches:0,requests:0};
-      await appScope.refresh({check});check();
+    async function register(batchPlan){
+      batchPlan.check();check();
       const runtimes=parallelRuntimes(check);
-      for(const row of plan.planned)runtimes.get(row.focus);
-      if(stableStringify(runtimes.signatures())!==stableStringify(plan.signature)||stableStringify(batchFingerprint(appScope.state.batches.filter(b=>overlaps(b,plan.requested))))!==stableStringify(plan.fingerprint))
-        throw new Error('总结设置或已保存范围有变化，请重新预览');
-      const planned=await op.workspace.update('summary-batches',rows=>{
+      for(const row of batchPlan.planned)runtimes.get(row.focus);
+      if(stableStringify(runtimes.signatures())!==stableStringify(batchPlan.signature))throw new Error('总结设置已变化，请重新预览');
+      const selected=batchPlan.selectedRows?batchPlan.planned:null;
+      const recorded=await op.workspace.update('summary-batches',rows=>{
+        const footprint=parallelFootprint(rows,batchPlan.requested,selected);
+        if(stableStringify(batchFingerprint(footprint))!==stableStringify(batchPlan.fingerprint))
+          throw new Error('已保存范围或批次已变化，请重新预览');
         const max=Math.max(0,...rows.map(b=>b.number??0));
-        const next=plan.planned.map((row,i)=>({...row,number:rows.find(b=>b.id===row.id)?.number??max+i+1}));
+        const next=batchPlan.planned.map((row,i)=>({...row,number:rows.find(b=>b.id===row.id)?.number??max+i+1}));
         const ids=new Set(next.map(b=>b.id));
         return [...rows.filter(b=>!ids.has(b.id)),...next];
       },[],{check});
-      const rows=plan.planned.map(row=>planned.find(b=>b.id===row.id));
-      appScope.state.batches=[...appScope.state.batches.filter(b=>!rows.some(row=>row.id===b.id)),...rows];
-      const title=plan.retry?'并行重试':'并行补总结';
-      appScope.summaryFeedback('running',`${title} · 共 ${rows.length} 批 · 同时最多 ${plan.concurrency} 批`,'manual');
-      const group=makeId('summary-parallel');
-      async function worker(){
-        while(!pauseError&&!op.signal.aborted&&cursor<rows.length){
-          const row={...rows[cursor++],status:'running',freshStart:false};
-          const runtime=runtimes.get(row.focus);
-          let generating=false;
-          op.parallelBatchIds.add(row.id);
-          try{
-            await saveRow(row);check();
-            if(pauseError){await saveRow({...row,status:'queued',freshStart:true});return;}
-            generating=true;
-            const result=await runtime.generate(row,{signal:op.signal,parallelGroup:group,parallelLimit:plan.concurrency,onDiagnostic:event=>{
-              if(event.phase==='request'&&event.level==='info')requests++;
-              appScope.runtimeLog.record({run:diagnosticRun,task:'summary',...event,details:{...event.details,batchNumber:row.number}});
-            }});
-            generating=false;
-            const save=saveTail.then(async()=>{
-              check();
-              await runtime.save(row,result);check();
-              saved++;
-              await saveRow({...row,status:'saved',savedOperationId:row.operationId,requests:result.requests});
-              appScope.summaryMonitor(op,{phase:'saving',completedBatches:saved,requestNumber:requests});
-              await appScope.refresh({check,summaryCommit:true});
-              appScope.summaryFeedback('running',`${title} · 已保存 ${saved}/${rows.length} 批`,'manual');
-            });
-            saveTail=save.catch(()=>{});
-            await save;
-          }catch(error){
-            failed++;
-            if(!plan.retry||!generating||shouldPauseProviderBatch(error)||
-              ['PERSISTENCE_ERROR','CHAT_CHANGED','CANCELED'].includes(error.code)||
-              ['invalid_api_key','insufficient_quota','outbound_host_denied'].includes(error.details?.upstreamCode))pauseError??=error;
-            if(!op.signal.aborted)await saveRow({...row,status:'failed',error:failureText(error)}).catch(()=>{});
-          }finally{op.parallelBatchIds.delete(row.id);}
-        }
-      }
-      await Promise.all(Array.from({length:Math.min(plan.concurrency,rows.length)},worker));
       check();
+      const rows=batchPlan.planned.map(row=>recorded.find(b=>b.id===row.id));
+      appScope.state.batches=[...appScope.state.batches.filter(b=>!rows.some(row=>row.id===b.id)),...rows];
+      for(const row of rows){
+        op.parallelBatchIds.add(row.id);
+        jobs.push({row,runtime:runtimes.get(row.focus),independent:batchPlan.retry||batchPlan.regenerate});
+      }
+      appScope.summaryMonitor(op,{phase:'running',totalBatches:jobs.length});
+    }
+    const canJoin=rows=>accepting&&!pauseError&&!op.signal.aborted&&rows.every(row=>
+      !jobs.some(job=>op.parallelBatchIds.has(job.row.id)&&overlaps(job.row,row))&&
+      ![...reservations].some(other=>overlaps(row,other)));
+    const pool={
+      concurrency,canJoin,
+      holds:id=>op.parallelBatchIds.has(id)||[...reservations].some(row=>row.id===id),
+      async join(batchPlan){
+        if(!canJoin(batchPlan.planned))return false;
+        for(const row of batchPlan.planned)reservations.add(row);
+        const pending=register(batchPlan);
+        admissions.add(pending);
+        try{
+          await pending;
+          appScope.summaryFeedback('running',`已加入并行${batchPlan.regenerate?'重生':'重试'} ${batchPlan.planned.length} 批 · 同时最多 ${concurrency} 批`,'manual');
+          pump();
+          return true;
+        }finally{
+          admissions.delete(pending);
+          for(const row of batchPlan.planned)reservations.delete(row);
+        }
+      },
+    };
+    const title=plan.regenerate?'并行重新生成':plan.retry?'并行重试':'并行补总结';
+    async function worker(){
+      while(!pauseError&&!op.signal.aborted&&cursor<jobs.length){
+        const job=jobs[cursor++],row={...job.row,status:'running',freshStart:false},runtime=job.runtime;
+        let generating=false;
+        try{
+          await saveRow(row);check();
+          if(pauseError){await saveRow({...row,status:'queued',freshStart:true});return;}
+          generating=true;
+          const result=await runtime.generate(row,{signal:op.signal,parallelGroup:group,parallelLimit:concurrency,onDiagnostic:event=>{
+            if(event.phase==='request'&&event.level==='info')requests++;
+            appScope.runtimeLog.record({run:diagnosticRun,task:'summary',...event,details:{...event.details,batchNumber:row.number}});
+          }});
+          generating=false;
+          const save=saveTail.then(async()=>{
+            check();
+            await runtime.save(row,result);check();
+            saved++;
+            await saveRow({...row,status:'saved',savedOperationId:row.operationId,parallelRegeneration:null,requests:result.requests});
+            appScope.summaryMonitor(op,{phase:'saving',completedBatches:saved,requestNumber:requests});
+            await appScope.refresh({check,summaryCommit:true});
+            appScope.summaryFeedback('running',`并行总结 · 已保存 ${saved}/${jobs.length} 批`,'manual');
+          });
+          saveTail=save.catch(()=>{});
+          await save;
+        }catch(error){
+          failed++;
+          if(!job.independent||!generating||shouldPauseProviderBatch(error)||
+            ['PERSISTENCE_ERROR','CHAT_CHANGED','CANCELED'].includes(error.code)||
+            ['invalid_api_key','insufficient_quota','outbound_host_denied'].includes(error.details?.upstreamCode))pauseError??=error;
+          if(!op.signal.aborted)await saveRow({...row,status:'failed',error:failureText(error)}).catch(()=>{});
+        }finally{op.parallelBatchIds.delete(row.id);}
+      }
+    }
+    function pump(){
+      while(!pauseError&&!op.signal.aborted&&cursor<jobs.length&&workers.size<concurrency){
+        const running=worker();
+        workers.add(running);
+        void running.then(()=>workers.delete(running),()=>workers.delete(running));
+      }
+    }
+    try{
+      await appScope.refresh({check});check();
+      await register(plan);
+      activeParallel=pool;
+      appScope.summaryFeedback('running',`${title} · 共 ${jobs.length} 批 · 同时最多 ${concurrency} 批`,'manual');
+      pump();
+      while(workers.size||admissions.size){
+        await Promise.race([...workers,...admissions].map(pending=>pending.catch(()=>{})));
+        pump();
+      }
+      accepting=false;check();
       await appScope.refresh({check,summaryCommit:true});
       if(pauseError){
-        appScope.summaryFeedback('warning',`${title}已暂停，保存 ${saved}/${rows.length} 批。未完成批次可继续。${failureText(pauseError)}`,'manual');
+        appScope.summaryFeedback('warning',`${title}已暂停，保存 ${saved}/${jobs.length} 批。未完成批次可继续。${failureText(pauseError)}`,'manual');
         return {status:'paused',batches:saved,requests,failed,level:'warning'};
       }
       if(failed){
@@ -313,6 +383,8 @@ async function runParallel(options,diagnosticRun,queuedPlan=null){
       appScope.summaryFeedback('success',`${title}已保存 ${saved} 批。`,'manual');
       return {status:'saved',batches:saved,requests};
     }finally{
+      accepting=false;
+      if(activeParallel===pool)activeParallel=null;
       if(appScope.activeSummaryOperation===op)appScope.activeSummaryOperation=null;
       op.finish();
     }
@@ -356,7 +428,20 @@ function executeSummary(options,queuedPlan=null){
       ?runParallel(options,run,queuedPlan):summarizeTask({...options,diagnosticRun:run}),{trigger:options.trigger??'manual'});
   }
 
+async function submitParallelSelection(options,plan,{dispatchQueued=false}={}){
+    assertParallelPlan(plan,options);
+    if(plan.planned.some(row=>activeParallel?.holds(row.id)))return {status:'running',requests:0,level:'info'};
+    if(!dispatchQueued&&plan.planned.some(row=>batchActions.some(entry=>entry.ids?.includes(row.id))))return {status:'queued',requests:0,level:'info'};
+    if(activeParallel&&await activeParallel.join(plan))return {status:'joined',requests:0};
+    if(!dispatchQueued&&(appScope.active||batchActions.length))return queueManualSummary(options,plan);
+    return executeSummary(options,plan);
+  }
+
 async function summarize(options={}){
+    if(options.regenerateBatchIds||options.retryBatchIds){
+      const plan=parallelPreview;parallelPreview=null;
+      return submitParallelSelection(options,plan);
+    }
     const newManual=(options.trigger??'manual')==='manual'&&!options.replaceBatchId&&!options.missingOnly&&!options.retryBatchIds;
     if(newManual&&(appScope.active||batchActions.length))return queueManualSummary(options);
     if(newManual&&options.previewHash&&options.previewHash===manualPreview?.previewHash)manualPreview.check();
@@ -537,18 +622,31 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
     }finally{if(appScope.activeSummaryOperation===op){appScope.activeSummaryOperation=null;appScope.activeSummaryBatchId=null;}op.finish();}
   }
 
-async function regenerateBatch(id,{trigger='manual',check:parentCheck,dispatchQueued=false}={}){
-    if(!dispatchQueued&&trigger==='manual'&&(appScope.active||batchActions.length))return queueBatchAction([id],'regenerate');
+async function regenerateBatch(id,{trigger='manual',check:parentCheck,dispatchQueued=false,parallelConcurrency=2}={}){
     const check=appScope.continuationCheck(parentCheck);check();const rows=await appScope.workspace.read('summary-batches',[]);check();const row=rows.find(b=>b.id===id);
     if(!row)throw new Error('批次不存在');
     if(row.replacedBy||row.status==='deleted'&&rows.some(b=>b.id!==row.id&&b.status==='saved'&&b.startIndex<=row.endIndex&&b.endIndex>=row.startIndex))throw new Error('旧批次已被范围覆盖，请从手动总结选择需要重新覆盖的范围');
     if(!Number.isInteger(row.startIndex)||!Number.isInteger(row.endIndex))throw new Error('旧版未保存楼层范围，请在手动总结中指定范围重新整理');
+    if(trigger==='manual'&&canRegenerateInParallel(row)&&!appScope.core.settings.summaryStaged&&!appScope.core.settings.summaryReviewEnabled){
+      if(appScope.activeSummaryOperation?.parallelBatchIds?.has(id)||batchActions.some(entry=>entry.ids?.includes(id)&&!dispatchQueued))
+        return {status:'running',requests:0,level:'info'};
+      const options={regenerateBatchIds:[id],parallelConcurrency};
+      const {plan,view}=await buildParallelPlan(options);check();
+      return submitParallelSelection({...options,previewHash:view.previewHash},plan,{dispatchQueued});
+    }
+    if(!dispatchQueued&&trigger==='manual'&&(appScope.active||batchActions.length))return queueBatchAction([id],'regenerate');
     check();
     return summarize({startIndex:row.startIndex,endIndex:row.endIndex,batchSize:row.endIndex-row.startIndex+1,focus:row.focus,replaceBatchId:id,trigger,rebuildCandidate:Boolean(row.replacement&&row.status!=='saved'&&row.status!=='deleted')});
   }
 
-async function retryBatch(id,{check:parentCheck,explicit=true,dispatchQueued=false}={}){
+async function retryBatch(id,{check:parentCheck,explicit=true,dispatchQueued=false,parallelConcurrency=2}={}){
     const check=appScope.continuationCheck(parentCheck);check();
+    if(explicit&&activeParallel&&canRetryInParallel(appScope.state.batches.find(row=>row.id===id))){
+      const options={retryBatchIds:[id],parallelConcurrency};
+      const {plan,view}=await buildParallelPlan(options);check();
+      if(!plan)return {status:'saved',requests:0};
+      return submitParallelSelection({...options,previewHash:view.previewHash},plan,{dispatchQueued});
+    }
     if(!dispatchQueued&&explicit&&(appScope.active||batchActions.length))return queueBatchAction([id],'retry');
     // A stale retry button can be clicked again before the busy UI paints.
     // Keep the current operation (and its progress) intact; never start a twin.
@@ -561,9 +659,9 @@ async function retryBatch(id,{check:parentCheck,explicit=true,dispatchQueued=fal
     if(!['failed','interrupted','queued'].includes(row.status))throw new Error('此批次当前不能续跑');
     if(canRetryInParallel(row)){
       const options={retryBatchIds:[row.id],parallelConcurrency:1};
-      const preview=await previewSummary(options);check();
-      if(!preview.plannedBatches)return {status:'saved',requests:0};
-      return summarize({...options,previewHash:preview.previewHash});
+      const {plan,view}=await buildParallelPlan(options);check();
+      if(!plan)return {status:'saved',requests:0};
+      return submitParallelSelection({...options,previewHash:view.previewHash},plan,{dispatchQueued});
     }
     if(!row.replacementReady&&!row.freshStart&&row.operationId&&appScope.core.inspectSummaryResume){
       const recovery=await appScope.core.inspectSummaryResume(row.operationId,{focus:row.focus});check();
@@ -664,6 +762,12 @@ async function applySummaryPrefix(id,{previewHash}={}){
 
 async function manageBatches(ids,action,options={}){
     appScope.assertCurrent();
+    if(action==='regenerate'&&ids.length&&!appScope.core.settings.summaryStaged&&!appScope.core.settings.summaryReviewEnabled&&
+      ids.every(id=>canRegenerateInParallel(appScope.state.batches.find(row=>row.id===id)))){
+      const request={regenerateBatchIds:ids,parallelConcurrency:options.parallelConcurrency??2};
+      const {plan,view}=await buildParallelPlan(request);
+      return submitParallelSelection({...request,previewHash:view.previewHash},plan);
+    }
     if(['retry','regenerate'].includes(action)&&(appScope.active||batchActions.length))return queueBatchAction(ids,action,options);
     if(appScope.active)throw new Error('请先停止总结');
     if(!['delete','restore'].includes(action))return manageBatchesTask(ids,action,options,appScope.continuationCheck());
@@ -703,9 +807,9 @@ async function manageBatchesTask(ids,action,options,check){
       if(targets.some(b=>!Number.isInteger(b.startIndex)||!Number.isInteger(b.endIndex)))throw new Error('所选旧批次没有楼层范围，请取消选择');
       if(action==='retry'&&targets.some(canRetryInParallel)&&targets.every(b=>b.status==='saved'||canRetryInParallel(b))){
         const request={retryBatchIds:selected,parallelConcurrency:options.parallelConcurrency??2};
-        const preview=await previewSummary(request);check();
-        if(!preview.plannedBatches)return {processed:0,failed:0,requests:0};
-        const result=await summarize({...request,previewHash:preview.previewHash});
+        const {plan,view}=await buildParallelPlan(request);check();
+        if(!plan)return {processed:0,failed:0,requests:0};
+        const result=await submitParallelSelection({...request,previewHash:view.previewHash},plan,{dispatchQueued:options.dispatchQueued});
         return {...result,processed:result.batches,failed:result.failed??0};
       }
       if(options.parallelOnly)throw new Error('请选择独立的并行批次');

@@ -602,8 +602,12 @@ export function createProductShellController({
           await repo.savePrivateTask(session.scope,row.operationId,patch).catch(()=>{});
         }
         guard();
-        const snapshot=await repo.readScope(session.scope,{includeHistory:false,check:guard});
-        if(snapshot.controls?.operations?.[row.operationId]==='active')return;
+        const previous=row.parallelRegeneration;
+        const snapshot=await repo.readScope(session.scope,{includeHistory:false,excludeOperations:previous?[previous]:[],check:guard});
+        const operations=snapshot.manifest?.controls?.operations;
+        if(operations?.[row.operationId]==='active')return;
+        if(previous&&operations?.[previous]!=='active')
+          throw Object.assign(new Error('本批旧结果已变化，请重新选择'),{code:'REVISION_CONFLICT'});
         if(snapshot.records.summaryView.some(r=>r.floorIndex>=row.startIndex&&r.floorIndex<=row.endIndex))
           throw Object.assign(new Error('这些楼层已有新保存的总结，请重新预览缺口'),{code:'REVISION_CONFLICT'});
         const expectedRevision=snapshot.committedRevision;
@@ -617,7 +621,8 @@ export function createProductShellController({
         }};
         parallelSourceGuard=proof;
         try{
-          await repo.commitBundle(rebased,{scope:session.scope,expectedRevision,check:guard,controlsPatch:{operations:{[row.operationId]:'active'}}});
+          await repo.commitBundle(rebased,{scope:session.scope,expectedRevision,check:guard,
+            controlsPatch:{operations:{...(previous?{[previous]:'deleted'}:{}),[row.operationId]:'active'}}});
         }finally{if(parallelSourceGuard===proof)parallelSourceGuard=null;}
       },
     };

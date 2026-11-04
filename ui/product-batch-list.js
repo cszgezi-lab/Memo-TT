@@ -1,7 +1,7 @@
 import { readViewState } from '../src/product-view-scheduling.js';
 import { esc,field } from '../src/product-settings-ui.js';
 import { CATEGORY_LABELS,recordDescription,readable,renderMemoryCard,memoryCards } from '../src/product-memory.js';
-import { MEMORY_CATEGORIES,pageSummaryBatches,canRetryInParallel } from '../src/product-batches.js';
+import { MEMORY_CATEGORIES,pageSummaryBatches,canRetryInParallel,canRegenerateInParallel } from '../src/product-batches.js';
 import { MAX_PARALLEL_SUMMARY_BATCHES } from '../src/provider-scheduler.js';
 import { hasNewerSavedCoverage } from '../src/product-auto-summary.js';
 import { parseModuleField } from '../src/product-custom-modules.js';
@@ -56,10 +56,13 @@ export function mountBatchList({panel,app,run,host}){
     retryCount.addEventListener('input',()=>{manualCount.value=retryCount.value;});
   }
   const pageOptions=()=>({query:$('[data-batch-search]').value,status:$('[data-batch-status]').value,page:currentPage,pageSize:Number($('[data-batch-size-list]').value)});
+  const allowsParallelRegeneration=(s,rows)=>Boolean(rows.length&&!s.settings?.summaryStaged&&!s.settings?.summaryReviewEnabled&&rows.every(canRegenerateInParallel));
   function selectionState(s){
     const rows=(s.batches??[]).filter(b=>selected.has(b.id)),single=rows.length===1?rows[0]:null;
     const parallel=rows.some(canRetryInParallel);
-    retryControl.hidden=!parallel;
+    const regenerate=allowsParallelRegeneration(s,rows);
+    retryControl.hidden=!parallel&&!regenerate;
+    $('[data-bulk="regenerate"]').textContent=regenerate?'并行重新生成':'重新生成';
     retryCount.disabled=false;
     retryButton.textContent=parallel?'并行重试所选':'重试所选';
     $('[data-batch-selection-toolbar]').hidden=!selecting||!rows.length;
@@ -89,19 +92,22 @@ export function mountBatchList({panel,app,run,host}){
   for(const button of panel.querySelectorAll('[data-bulk]'))button.addEventListener('click',()=>run(async()=>{
     const ids=[...selected],action=button.dataset.bulk,label={retry:'重试',regenerate:'重新生成',delete:'删除',restore:'恢复'}[action];
     const state=readViewState(app),scope=JSON.stringify(state.core?.scope);
-    if(action==='retry'&&state.batches.some(b=>selected.has(b.id)&&canRetryInParallel(b))){
-      const options={retryBatchIds:ids,parallelConcurrency:retryCount.valueAsNumber};
-      if(!Number.isInteger(options.parallelConcurrency)||options.parallelConcurrency<1||options.parallelConcurrency>MAX_PARALLEL_SUMMARY_BATCHES)throw new Error(`并行批数应为 1–${MAX_PARALLEL_SUMMARY_BATCHES} 的整数`);
-      const rows=state.batches.filter(b=>ids.includes(b.id)&&b.status!=='saved');
-      if(rows.some(b=>!canRetryInParallel(b)))throw new Error('请分开选择并行批次和顺序批次');
-      const waiting=state.busy||state.queuedBatchActions?.length;
-      const preview=waiting?{plannedBatches:rows.length,concurrency:options.parallelConcurrency,maxRequests:rows.length}:await app.previewSummary(options);checkScope(scope);
+    if(action==='regenerate'&&allowsParallelRegeneration(state,state.batches.filter(b=>selected.has(b.id)))){
+      const options={regenerateBatchIds:ids,parallelConcurrency:retryCount.valueAsNumber};
+      const preview=await app.previewSummary(options);checkScope(scope);
       if(!preview.plannedBatches)return;
-      const confirm=`${waiting?'加入等待队列，当前任务结束后处理。':''}并行重试 ${preview.plannedBatches} 批，同时最多 ${Math.min(preview.concurrency,preview.plannedBatches)} 批，最多 ${preview.maxRequests} 次总结请求。已有有效回复会复用。单批内容失败后继续其它所选批次，遇到连接或存储故障暂停。`;
+      const timing=preview.joinsParallel?`与当前任务共用 ${preview.concurrency} 个并行名额，有空位即可开始。`:preview.waiting?'当前任务结束后启动并行生成。':`同时最多处理 ${Math.min(preview.concurrency,preview.plannedBatches)} 批。`;
+      if(!await host.confirm?.(`重新生成 ${preview.plannedBatches} 批？${timing}最多发送 ${preview.maxRequests} 次总结请求，单批成功保存后替换该批旧结果。`))return;
+      checkScope(scope);await app.summarize({...options,previewHash:preview.previewHash});
+    }else if(action==='retry'&&state.batches.some(b=>selected.has(b.id)&&canRetryInParallel(b))){
+      const options={retryBatchIds:ids,parallelConcurrency:retryCount.valueAsNumber};
+      const preview=await app.previewSummary(options);checkScope(scope);
+      if(!preview.plannedBatches)return;
+      const timing=preview.joinsParallel?`与当前任务共用 ${preview.concurrency} 个并行名额，有空位即可开始。`:preview.waiting?'当前任务结束后启动并行重试。':`同时最多处理 ${Math.min(preview.concurrency,preview.plannedBatches)} 批。`;
+      const confirm=`并行重试 ${preview.plannedBatches} 批？${timing}最多发送 ${preview.maxRequests} 次总结请求，已有有效回复会复用。`;
       if(!await host.confirm?.(confirm))return;
       checkScope(scope);
-      if(waiting)await app.manageBatches(ids,'retry',{parallelConcurrency:options.parallelConcurrency,parallelOnly:true});
-      else await app.summarize({...options,previewHash:preview.previewHash});
+      await app.summarize({...options,previewHash:preview.previewHash});
     }else{
       if(!await host.confirm?.(`${label}所选 ${ids.length} 批？${action==='delete'?'仅删除所选批次，未应用候选不会改变旧正式记忆。可在设置中的回收站恢复，聊天原文不变。':action==='regenerate'?'将按楼层顺序调用总结模型，新结果成功后替换旧结果。':'只处理所选批次，已成功结果保留。'}`))return;
       checkScope(scope);await app.manageBatches(ids,action);
@@ -134,9 +140,13 @@ export function mountBatchList({panel,app,run,host}){
     const actionDisable=queued||b.status==='running'?' disabled':'';
     const retry=['queued','failed','interrupted'].includes(b.status),content=MEMORY_CATEGORIES.filter(key=>(b.records?.[key]?.length??b.counts?.[key]??0)>0);
     const body=node.querySelector('[data-batch-body]');body.innerHTML=`<b class="memo-compact-range">${Number.isInteger(b.startIndex)?`${b.startIndex}–${b.endIndex} 楼`:'旧版未保存楼层号'}</b><p class="memo-help">${b.replacementReady&&b.replacement&&!b.savedOperationId?'已生成，待应用':batchStateText(b)}</p>${queued&&b.status!=='running'?`<p class="memo-help" role="status">${queued.action==='retry'?'重试':'重新生成'}已排队</p>`:''}${partialSummaryHTML(b)}${b.error?`<p class="memo-batch-error">${esc(b.error)}</p>`:''}<p class="memo-help">${b.previousOperation&&b.status!=='saved'?'上次成功结果仍保留。':''}${Number.isInteger(b.requests)?`最近一次处理：${b.requests} 次模型请求。`:''}</p><div class="memo-actions memo-batch-direct-actions">${deleted?`<button type="button" data-restore-batch${disable}>恢复本批</button>`:`${retry?`<button type="button" data-retry-batch${actionDisable}>重试本批</button>`:''}<button type="button" data-regenerate-batch${actionDisable}>重新生成</button><button type="button" data-delete-batch${disable}>删除本批</button>`}</div><p class="memo-help">${esc(batchVectorStatusText(s.batchVectors?.[b.id]))}</p>${!deleted&&s.batchVectors?.[b.id]?.pending?`<button type="button" data-retry-batch-vectors${disable}>补建本批索引</button>`:''}${content.map(key=>`<details><summary>${CATEGORY_LABELS[key]} · ${b.counts?.[key]??b.records?.[key]?.length??0} 条</summary>${(b.records?.[key]??[]).map(r=>`<p>${Number.isInteger(r.floorIndex)?`${r.floorIndex} 楼 · `:''}${esc(batchRecordDescription(r,s.modules))}</p>${r.keyDialogues?.length||r.viewpoints?.length?`<div class="memo-packet memo-help">${esc(renderMemoryCard(linked.get(r.id)??r,s.settings,{metadataOnly:true,detail:true}))}</div>`:''}`).join('')||'<p class="memo-help">本批未生成此类记录。</p>'}</details>`).join('')||'<p class="memo-help">本批还没有已保存内容。</p>'}`;
-    body.querySelector('[data-retry-batch]')?.addEventListener('click',event=>run(()=>app.retryBatch(b.id),{name:'focus-summary',button:event.currentTarget}));
+    body.querySelector('[data-retry-batch]')?.addEventListener('click',event=>run(()=>app.retryBatch(b.id,{parallelConcurrency:retryCount.valueAsNumber}),{name:'focus-summary',button:event.currentTarget}));
     body.querySelector('[data-retry-batch-vectors]')?.addEventListener('click',event=>run(()=>app.retryBatchVectors(b.id),{name:'vectors',button:event.currentTarget}));
-    body.querySelector('[data-regenerate-batch]')?.addEventListener('click',event=>run(()=>app.regenerateBatch(b.id),{name:'focus-summary',button:event.currentTarget}));
+    const regenerateButton=body.querySelector('[data-regenerate-batch]');
+    if(regenerateButton){
+      if(allowsParallelRegeneration(s,[b]))regenerateButton.textContent='并行重新生成';
+      regenerateButton.addEventListener('click',event=>run(()=>app.regenerateBatch(b.id,{parallelConcurrency:retryCount.valueAsNumber}),{name:'focus-summary',button:event.currentTarget}));
+    }
     body.querySelector('[data-delete-batch]')?.addEventListener('click',()=>run(async()=>{if(!await host.confirm?.(b.replacement&&!b.savedOperationId?'删除该批候选？仅移除本批，旧正式记忆和其它候选保留；可在设置中的回收站恢复。':'删除该批生成的记忆？聊天原文不变，可恢复或重生。'))return;checkScope(capturedScope);await app.deleteBatch(b.id);}));
     body.querySelector('[data-restore-batch]')?.addEventListener('click',()=>run(()=>app.restoreBatch(b.id)));
   }

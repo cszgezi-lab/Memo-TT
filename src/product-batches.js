@@ -3,7 +3,10 @@ import { DRAFT_CATEGORIES } from './contracts.js';
 export const MEMORY_CATEGORIES=Object.freeze(DRAFT_CATEGORIES.filter(k=>k!=='coverage'));
 export const batchOperationIds=b=>[...new Set([b.operationId,b.previousOperation,...(b.attempts??[])].filter(Boolean))];
 export const savedBatchOperation=b=>b.replacement&&!b.savedOperationId?null:b.savedOperationId??(b.status==='saved'||b.status==='deleted'&&!b.error?b.operationId:b.previousOperation)??null;
-export const canRetryInParallel=b=>Boolean(b?.parallelBatch&&!b.replacement&&!savedBatchOperation(b)&&['queued','failed','interrupted'].includes(b.status));
+export const canRegenerateInParallel=b=>Boolean(b?.parallelBatch&&!b.replacement&&!b.replacedBy&&
+  Number.isInteger(b.startIndex)&&Number.isInteger(b.endIndex)&&['saved','queued','failed','interrupted'].includes(b.status));
+export const canRetryInParallel=b=>canRegenerateInParallel(b)&&b.status!=='saved'&&
+  (!savedBatchOperation(b)||savedBatchOperation(b)===b.parallelRegeneration);
 export const sameBatchRange=(a,b)=>Number.isInteger(a.startIndex)&&Number.isInteger(a.endIndex)&&a.startIndex===b.startIndex&&a.endIndex===b.endIndex;
 
 // Associate derived recall cards with their contributing batch, including a
