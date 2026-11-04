@@ -31,7 +31,7 @@ const stageReason=v=>{
 };
 export const INJECTION_DETAIL_LABELS=Object.freeze({source_evidence_omitted:'原文限制片段放不下，整条省略，未退回可能漏条件的短摘要',source_evidence:'附带相关原文片段',full_character:'完整人物档案',current_field:'当前字段',excerpt:'相关正文片段',brief:'召回摘要'});
 const array=v=>Array.isArray(v)?v:[];
-const reasons=new Set(['人物重要对话','人物身份匹配','人物档案全量','当前属性','关键词匹配','标签匹配','分类检索','语义匹配','人物精确匹配','相关候选','解释已注入知情的明确关联事件','同源约定的原始事件']);
+const reasons=new Set(['人物重要对话','人物身份匹配','人物档案全量','当前属性','关键词匹配','标签匹配','分类检索','直接匹配本轮问题的记录','语义匹配','人物精确匹配','相关候选','解释已注入知情的明确关联事件','同源约定的原始事件']);
 const scores=v=>Object.fromEntries(['keyword','vector','fusion','final'].map(k=>[k,typeof v?.[k]==='number'&&Number.isFinite(v[k])?v[k]:null]));
 const personaStats=v=>v&&typeof v==='object'?{prepared:v.prepared===true,textKind:v.textKind==='inserted_messages_and_fragments'?v.textKind:'selected_materials',replaced:num(v.replaced),supplemental:num(v.supplemental),...(v.coverage?{coverage:Object.fromEntries(['replacedEntries','replacedFragments','restoredFragments','replacedCardFields','rejectedProfiles','owned','shared','unresolved'].map(k=>[k,num(v.coverage[k])]))}:{}),profiles:array(v.profiles).slice(0,100).map(p=>({id:str(p.id,160),name:str(p.name,120),through:num(p.through),chars:num(p.chars),mode:p.mode==='replacement'?'replacement':'supplement'}))}:null;
 function storedEntry(e){

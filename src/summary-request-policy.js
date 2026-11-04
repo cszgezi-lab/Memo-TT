@@ -34,8 +34,8 @@ const prose={
  evidenceBoundaryRules:null,
  promiseBoundaryRules:null,
  journalCoverageRules:'innerLife仅记录明示内心独白、自述或变化，缺失时省略；台词与双方实际回应保在对应记录，客观态度无需再写一份推演心理。',
- profileRules:'逐人提取原文明示属性，field用自然中文并沿用同义旧字段，to可为JSON值。物品、功法和能力只记有后续影响的获得、失去、升级或限制变化；普通使用留在当时事件。保留适用条件及各次变值的来源，知情归awarenessChanges。',
- interpretationRules:'明确到账流水用本次收入或本次支出，to保留金额和单位，account按原文。余额、累计额、计划及旧流水不算新流水。personaChanges记明示的定向态度变化，填object/context/scope。performanceHints记常态习惯。conflicts记真实分歧及核实。innerLife记明示内心，未知原因留空，保留私密范围。',
+ profileRules:'逐人提取原文明示属性，field用稳定的中文属性名并沿用同义旧字段，身份、外貌等独立属性分开写，to可为JSON值。物品、功法和能力只记有后续影响的获得、失去、升级或限制变化；普通使用留在当时事件。保留适用条件及各次变值的来源，知情归awarenessChanges。',
+ interpretationRules:'现金余额统一用field“现金余额”，to写金额和币种，account仅填原文明示的账户。明确到账流水用本次收入或本次支出，to保留金额和单位，account按原文。余额、累计额、计划及旧流水不算新流水。personaChanges记明示的定向态度变化，填object/context/scope。performanceHints记常态习惯。conflicts记真实分歧及核实。innerLife记明示内心，未知原因留空，保留私密范围。',
  detailRules:'可加entities:[{name,kind,aliases,indexWords}]及具体中文tags；别称首次/变更时记录。关键原话用keyDialogues:[{speaker,to,text,context,meaning,status}]，逐字取直接引语，GAL取中文译句；双方原话分别保留，active与historical区分当前/过去。viewpoints:[{holder,target,content,context,basis}]保存明示观念，放最相关条目；缺证省略。',
  consolidationRules:'同一经历跨楼延续合成一条事件并汇集sourceRefs，独立经历分别记录。确认接续旧事件时mergeInto用其精确id，description仍独立记录本批有据经过，recallSummary概括本条；目标不确定就独立保存。跨批合并由程序核对，本批引用指向已输出id；日期/人物/场景不同的再次经历及回忆与当前讲述分开。明确观念变化保前后态度，未知原因留空。summaryView逐楼保留。',
 };

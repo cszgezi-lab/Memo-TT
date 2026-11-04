@@ -3,7 +3,7 @@ import { estimateUnits, clone, stableStringify, throwIfAborted, yieldLocalWork }
 import { buildDictionary, dictionaryQuery,enrichRetrievalMetadata } from './product-dictionary.js';
 import { fullSearchText, narrativeText, recordTitle, sourceFloors, sourceLabel, stateLabel, awarenessLabel, viaLabel, relationLabel, epistemicLabel, fieldLabel,scopeLabel,compactAwarenessText } from './product-narrative.js';
 import { hasStoryTime, storyDateOf } from './temporal.js';
-import { coveredRecallRecord, recallSelectionReason, nameOnlyRecallCandidates, coverLocalQuestionParts, coverLocalQuestionPartsAsync, recallActorFilter } from './product-recall-packing.js';
+import { coveredRecallRecord, recallSelectionReason, nameOnlyRecallCandidates, coverLocalQuestionParts, coverLocalQuestionPartsAsync, recallActorFilter, recallRelationshipScope, structuredRecallMatch, hasSubstantiveRecallMatch } from './product-recall-packing.js';
 import { factValue, factImportance, fullCharacterGroups, currentAttributeRecords, awarenessSubjectLabel, characterRecordSubjects, explicitSubjectNames, PERSON_RECORD_CATEGORIES, factKey,numericFactProjection } from './product-person-profiles.js';
 import {foldName} from './persona-identity.js';
 import {markMemoryStates,memoryHistoryIntent} from './memory-current-state.js';
@@ -56,7 +56,11 @@ const sameSource=(a,b)=>a.sourceId===b.sourceId&&['fragmentId','version','swipeI
 const sharesSource=(a,b)=>(a.sourceRefs??[]).some(x=>(b.sourceRefs??[]).some(y=>sameSource(x,y)));
 export function recordDescription(record) {
   const category=record.category;
-  if ((record.entity||record.entityId)&&(record.field||record.key)&&category!=='personaChanges') return `${narrativeText(record.entity ?? record.entityId)} · ${record.fieldLabel??fieldLabel(record.field ?? record.key)}：${factValue(record)===null?'已清空 / 未赋值':narrativeText(factValue(record))}`;
+  if ((record.entity||record.entityId)&&(record.field||record.key)&&category!=='personaChanges') {
+    const label=record.fieldLabel??fieldLabel(record.field??record.key);
+    const account=record.account&&!record.numericProjection?`（${narrativeText(record.account)}）`:'';
+    return `${narrativeText(record.entity??record.entityId)} · ${label}${account}：${factValue(record)===null?'已清空 / 未赋值':narrativeText(factValue(record))}`;
+  }
   const body=record.description??record.content??record.text??record.summary??record.knowledge??record.fact??record.guidance??record.instruction??record.hint??record.explanation??record.issue;
   if(category==='relationshipChanges'||record.evidenceKind){
     const heading=`${narrativeText(record.from??record.subject)} → ${narrativeText(record.to??record.object)}：${relationLabel(record.evidenceKind??record.kind)}`;
@@ -775,7 +779,10 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   const matched=dictionaryQuery(query,lexicon,{expandTopics:false}),q=matched.query;
   const focused = query === focusQuery ? null : dictionaryQuery(focusQuery, lexicon, {expandTopics:false});
   const personNames=(lexicon.entries??[]).filter(e=>e.kind==='人物').flatMap(e=>[e.name,...(e.aliases??[])]);
-  const queryTokens=tokenizeChinese(sourceEvidenceQuery(dictionaryQuery(focusQuery,lexicon,{expandTopics:false}).query,personNames));
+  const questionTopic=text=>sourceEvidenceQuery(text,personNames)
+    .replace(/是什么关系|关系如何|关系怎么样|是什么|有多少|有什么|做了什么|是在哪里|在哪里|完成的|的约定|怎么回事|如何|怎样|现在|以前|当时|后来/gu,' ');
+  const topicQuery=questionTopic(focusQuery);
+  const queryTokens=tokenizeChinese(questionTopic(dictionaryQuery(focusQuery,lexicon,{expandTopics:false}).query));
   const evidenceExcerpts=new Map();
   const sourceExcerptFor=record=>{
     if(!evidenceExcerpts.has(record.id))evidenceExcerpts.set(record.id,sourceRecallExcerpt(record,queryTokens,personNames));
@@ -882,10 +889,15 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   const channelFilter=settings.distributedEnabled&&settings.distributedStrategy==='leader_only'
     ? c=>(c.category==='knowledge'?'knowledge':'memory')===settings.distributedChannel : undefined;
   const factAsked=record=>[record.field,record.fieldLabel,typeof record.to==='string'?record.to:''].filter(item=>typeof item==='string'&&item.trim().length>=2).some(item=>String(focusQuery).includes(item));
+  const relationshipScope=recallRelationshipScope(selected,lexicon,focusQuery);
+  const directQuestion=/[?？]|谁|什么|怎么|哪里|哪儿|何时|是否|吗|多久|几个|多少|如何|为何|为什么/u.test(focusQuery);
+  const scopedPairQuestion=directQuestion&&/关系|态度|相处|什么交情|什么来往/u.test(focusQuery)&&
+    !matched.terms.some(term=>lexicon.entries.some(e=>e.name===term.name&&['地点','组织','物品'].includes(e.kind)));
+  const namedRelationship=record=>record.category==='relationshipChanges'&&scopedPairQuestion&&relationshipScope.explicitPair(record);
   const attitudeBlob=record=>[record.description,record.recallSummary,record.title,record.aspect,record.context,record.scope,record.innerLife?.text,record.innerLife?.stage,...(record.keyDialogues??[]).flatMap(quote=>[quote.text,quote.context,quote.meaning])].filter(item=>typeof item==='string').join('\n');
   const attitudeAsked=record=>{
     if(!['relationshipChanges','personaChanges','performanceHints'].includes(record.category))return true;
-    if(historyIntent)return true;
+    if(historyIntent||namedRelationship(record))return true;
     const names=new Set(tokenizeChinese([record.from,record.to,record.subject,record.object,record.entity].filter(Boolean).join(' ')));
     const topics=tokenizeChinese(focusQuery).filter(token=>token.length>1&&!names.has(token)&&!/^(什么|怎么|为什么|怎样|如何|现在|继续|然后|一下|来了|说了|说话)$/.test(token));
     if(!topics.length)return false;
@@ -910,8 +922,12 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     actorDecisions.set(c,relevant);return relevant;
   };
   const filter=c=>actorRelevant(c)&&(historyIntent||!historicalIds.has(c.id))&&!fullIds.has(c.id)&&(historyIntent||!olderFactIds.has(c.id)||factAsked(c))&&attitudeAsked(c)&&directPersonOnly(c)&&!coveredPersonaHistory(c)&&(!channelFilter||channelFilter(c));
+  const directTerms=tokenizeChinese(topicQuery);
+  const pairFocus=scopedPairQuestion&&selected.some(namedRelationship);
+  const structuredFilter=settings.retrievalLimit>=3&&(directTerms.length||pairFocus)
+    ? c=>pairFocus?namedRelationship(c):structuredRecallMatch(c,directTerms,personNames) : undefined;
   const retrievalStarted=globalThis.performance?.now?.()??Date.now();
-  const result = await retrieveMemories({ index, query: q, limit: Math.max(settings.retrievalLimit, settings.retrievalCandidateLimit ?? 24), vectorAdapter, reranker, signal,categoryLanes,filter,
+  const result = await retrieveMemories({ index, query: q, limit: Math.max(settings.retrievalLimit, settings.retrievalCandidateLimit ?? 24), vectorAdapter, reranker, signal,categoryLanes,filter,structuredFilter,
     focus: focused ? {query: focused.query, entityIds: focused.entities} : null,
     entityIds:matched.entities,tagLanes,
     totalTimeoutMs: settings.retrievalTimeoutMs,
@@ -1111,6 +1127,19 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   const budget = settings.retrievalBudgetUnits;
   const nameOnly=nameOnlyRecallCandidates(candidates,ordinaryQuery,lexicon,result.trace.rerank.status==='passed'?(result.trace.rerank.scores??[]).map(s=>s.id):[],selected,focusQuery);
   for(const id of sourceFloorPromotedIds)nameOnly.delete(id);
+  for(const item of candidates)if(item.structuredMatch||namedRelationship(item.record))nameOnly.delete(item.id);
+  if(result.trace.rerank.status!=='passed'){
+    const firstFloor=candidates.findIndex(c=>c.record.category==='summaryView'&&!nameOnly.has(c.id)&&
+      !c.queryCoverageRescue&&!c.queryPartCoverage);
+    if(firstFloor>=0){
+      const promoted=candidates.slice(firstFloor+1).filter(c=>c.structuredMatch)
+        .slice(0,Math.min(3,settings.retrievalLimit-1)).map(c=>({...c,structuredPriority:true}));
+      const ids=new Set(promoted.map(c=>c.id));
+      candidates=[...candidates.slice(0,firstFloor),...promoted,...candidates.slice(firstFloor).filter(c=>!ids.has(c.id))];
+    }
+  }
+  const rankFloorsLocally=result.trace.rerank.status!=='passed'&&!/原文|原话|台词|怎么说|哪一楼|第\s*\d+\s*楼|逐楼/u.test(focusQuery);
+  const directRecords=rankFloorsLocally?characterChosen.map(({record})=>record).filter(record=>structuredRecallMatch(record,directTerms,personNames)):[];
   // A retrieved open agreement carries its encounter when exact source
   // revisions and substantive content identify one event. This applies to any
   // story topic; a list of scenario verbs must not decide whether context exists.
@@ -1137,7 +1166,16 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     const sourceExcerpt=item.queryPlanCoverage&&item.record.category==='summaryView'?originalSourceText(item.record):sourceExcerptFor(item.record);
     const body=[excerpt?`${brief}\n相关经过：${excerpt}`:brief,sourceExcerpt?sourceQuote(item.record,sourceExcerpt,{injection:true}):''].filter(Boolean).join('\n');
     const coveredBy=item.record.category==='awarenessChanges'?null:coveredRecallRecord(item.record,body,chosen);
-    const decision={id:item.id,title:recordTitle(item.record),category:item.record.category,reason:item.sourceProvenance?'同源约定的原始事件':item.sourceFloorPromotion?'多楼同源细节的完整事件':item.queryCoverageRescue?'原文补充未覆盖的检索细节':item.queryPartCoverage?'分别覆盖本轮的问题':recallSelectionReason(item),scores:{keyword:item.localScore??null,vector:item.vectorScore??null,fusion:item.fusionScore??null,final:item.score??null}};
+    const decision={id:item.id,title:recordTitle(item.record),category:item.record.category,reason:item.sourceProvenance?'同源约定的原始事件':item.sourceFloorPromotion?'多楼同源细节的完整事件':item.queryCoverageRescue?'原文补充未覆盖的检索细节':item.queryPartCoverage?'分别覆盖本轮的问题':item.structuredPriority?'直接匹配本轮问题的记录':recallSelectionReason(item),scores:{keyword:item.localScore??null,vector:item.vectorScore??null,fusion:item.fusionScore??null,final:item.score??null}};
+    if(rankFloorsLocally&&directRecords.length&&item.record.category==='summaryView'&&!item.queryPartCoverage&&
+      !item.queryCoverageRescue&&!item.channels?.includes('vector_optional')&&
+      !directRecords.some(record=>sharesSource(item.record,record))){
+      const text=body.toLocaleLowerCase(),terms=evidenceTerms(item.record,directTerms,personNames);
+      const shortTopic=topicQuery.trim();
+      if(!hasSubstantiveRecallMatch(text,terms)&&!(terms.includes(shortTopic)&&text.includes(shortTopic))){
+        omitted.push(item.id);decisions.push({...decision,status:'name_only'});continue;
+      }
+    }
     if(nameOnly.has(item.id)&&!sourceExcerpt&&!item.queryPlanCoverage){omitted.push(item.id);decisions.push({...decision,status:'name_only'});continue;}
     if(coveredBy){decisions.push({...decision,status:'duplicate',coveredBy});omitted.push(item.id);continue;}
     let relatedContext=null,metadataRanges=[],module=null;
@@ -1159,6 +1197,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     }
     if (memoryCount >= settings.retrievalLimit || estimateUnits(`${packetHeader}\n\n${trial.text}`) > budget) { omitted.push(item.id);decisions.push({...decision,status:memoryCount>=settings.retrievalLimit?'limit':'budget'});continue; }
     packed.push(item.record);packetEntries.push({record:item.record,text:part,relatedContext,metadataRanges,module});chosen.push({record:item.record,body:usedBody});content = `${packetHeader}\n\n${trial.text}`;
+    if(rankFloorsLocally&&item.structuredMatch)directRecords.push(item.record);
     memoryCount++;
     if(usedExcerpt)excerpts++;
     decisions.push({...decision,status:'selected',detail:sourceExcerpt&&usedExcerpt?'source_evidence':usedExcerpt?'excerpt':'brief',detailOmitted:Boolean(excerpt||sourceExcerpt)&&!usedExcerpt});

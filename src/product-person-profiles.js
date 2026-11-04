@@ -6,6 +6,24 @@ export const factValue = record => Object.hasOwn(record,'to')?record.to:Object.h
 export const factSubject = record => record.entity??record.entityId;
 export const factKey = record => record.fieldKey??record.field??record.key;
 
+const CASH_FIELD=/^(?:(日元|美元|人民币|港元|欧元|英镑|金币|银币|铜币))?(?:现金余额|现金持有量|持有现金|现金)$/u;
+
+export function cashUnit(record){
+  if(record.customModuleId||record.fieldId)return null;
+  const match=CASH_FIELD.exec(String(factKey(record)??'').trim());
+  if(!match)return null;
+  const value=factValue(record);
+  const amount=typeof value==='string'&&/^\s*[+-]?\d[\d,]*(?:\.\d+)?\s*([^\d\s.,，。；;()（）]+)(?:\s*[（(].*)?\s*$/u.exec(value);
+  if(match[1]&&amount&&match[1]!==amount[1])return null;
+  return match[1]??(amount?amount[1]:null);
+}
+
+export function attributeField(record){
+  if(cashUnit(record))return '现金余额';
+  const key=factKey(record);
+  return typeof key==='string'?key.trim():key;
+}
+
 // Only explicit transaction fields participate. Balance/age/snapshot numbers
 // retain their normal replacement semantics. Stored evidence stays immutable.
 export function numericFactProjection(records){
@@ -143,11 +161,13 @@ export function characterProfiles(cards=[]) {
 // Latest value of each field is standing context. An earlier row leaves that
 // card only when a strictly later source floor, or the same floor with a later
 // validFrom, identifies a successor. Same-moment disagreements stay together.
-export function currentAttributeRecords(records){
+export function currentAttributeRecords(records,{subject}={}){
   const groups=new Map();
   for(const record of records){
     if(record?.category!=='entityFactChanges'||!factSubject(record)||!factKey(record))continue;
-    const key=`${factSubject(record)}\0${factKey(record)}`;
+    const key=stableStringify([subject??factSubject(record),attributeField(record),cashUnit(record),
+      record.account??null,record.scope??null,record.context??null,record.customModuleId??null,record.fieldId??null,
+      record.epistemicStatus??null]);
     const rows=groups.get(key)??[];rows.push(record);groups.set(key,rows);
   }
   const current=[],older=[];
@@ -164,13 +184,23 @@ export function currentAttributeRecords(records){
   }
   return {current,older};
 }
+
+export function attributeFieldGroups(records, subject){
+  const fields=new Map();
+  for(const record of records){
+    const field=attributeField(record)??'属性';
+    const rows=fields.get(field)??[];
+    rows.push(record);fields.set(field,rows);
+  }
+  return [...fields].map(([field,rows])=>({field,...currentAttributeRecords(rows,{subject})}));
+}
 // Only identical fact payload AND guards may be omitted from a recall packet.
 // Different dates, belief holders, values or scoped custom modules stay distinct.
 export function sameFactForRecall(a,b){
   if(a.category!=='entityFactChanges'||b.category!=='entityFactChanges'||!factSubject(a)||!factKey(a))return false;
   const signature=r=>stableStringify({entity:factSubject(r),field:factKey(r),fieldId:r.fieldId??null,value:factValue(r),
     temporal:r.temporal??null,validFrom:r.validFrom??null,validUntil:r.validUntil??null,
-    epistemicStatus:r.epistemicStatus??null,context:r.context??null,scope:r.scope??null,
+    epistemicStatus:r.epistemicStatus??null,context:r.context??null,scope:r.scope??null,account:r.account??null,
     from:r.from??r.oldValue??null,confirmed:r.confirmed??null,changeKind:r.changeKind??null,correctionOf:r.correctionOf??null,
     awareness:(r.awareness??[]).map(({id,sourceRefs,...row})=>row),eventRef:r.eventRef??null,eventRefs:r.eventRefs??[],
     customModuleId:r.customModuleId??null,viewpoints:r.viewpoints??[],keyDialogues:r.keyDialogues??[],followUps:r.followUps??[]});

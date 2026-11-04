@@ -566,6 +566,7 @@ export async function retrieveMemories({
   entityIds = [],
   tagLanes = [],
   categoryLanes = [],
+  structuredFilter,
   focus = null,
   filter,
   vectorAdapter = null,
@@ -601,6 +602,15 @@ export async function retrieveMemories({
   const focusSpecific = candidate => candidate.exactEntities?.length || (candidate.termMatches ?? []).some(specificTerm);
   const focusOptions={limit:Math.max(limit,rerankOptions.maxCandidates??limit),entityIds:focus?.entityIds??[],filter:keywordFilter};
   const focusLocal = distinctFocus ? (focusSearch.searchAsync ? await focusSearch.searchAsync(focusOptions) : focusSearch.search(focusOptions)).filter(focusSpecific) : [];
+  const structuredLimit = structuredFilter ? Math.min(4, Math.floor(capacity / 3)) : 0;
+  let structured = [];
+  if (structuredLimit) {
+    const options = {limit: structuredLimit, entityIds: distinctFocus ? focus.entityIds : entityIds,
+      filter: record => keywordFilter(record) && structuredFilter(record)};
+    structured = distinctFocus
+      ? await (focusSearch.searchAsync ? focusSearch.searchAsync(options) : focusSearch.search(options))
+      : await mainSearch(options);
+  }
   // A rare two-character reference can still be a pronoun. One short match
   // may keep one candidate, but cannot claim half the pool on rarity alone.
   const matchedPositions = new Set(), focusText = normalizeText(focus?.query).toLocaleLowerCase();
@@ -630,6 +640,10 @@ export async function retrieveMemories({
   const remaining = () => explicitTotal ? Math.max(0, onlineBudget - (monotonicNow() - onlineStartedAt)) : Infinity;
   const stageTimeout = (requested, fallback) => Math.min(Number.isFinite(requested) && requested > 0 ? requested : fallback, remaining());
   const byId = new Map(local.map((candidate) => [String(candidate.id), candidate]));
+  for (const item of structured) {
+    const candidate = byId.get(String(item.id)) ?? item;
+    byId.set(String(item.id), {...candidate, structuredMatch: true});
+  }
   for(const lane of tagged)for(const item of lane.candidates){const candidate=byId.get(String(item.id))??item;candidate.channels=[...new Set([...candidate.channels,'tag_local'])];byId.set(String(item.id),candidate);}
   for(const lane of classified)for(const item of lane.candidates){const candidate=byId.get(String(item.id))??item;candidate.channels=[...new Set([...candidate.channels,'category_local'])];byId.set(String(item.id),candidate);}
   for (const item of focused) {
@@ -746,6 +760,12 @@ export async function retrieveMemories({
     const pool = [...protectedRows, ...rest.slice(0, capacity - protectedRows.length)].sort(compareCandidates);
     const pooled = new Set(pool.map(c => c.id));
     candidates = [...pool, ...candidates.filter(c => !pooled.has(c.id))];
+  }
+  if (structured.length) {
+    const protectedRows = candidates.filter(c => c.structuredMatch);
+    const rest = candidates.filter(c => !c.structuredMatch);
+    const pool = [...protectedRows, ...rest.slice(0, capacity - protectedRows.length)].sort(compareCandidates);
+    candidates = [...pool, ...rest.slice(capacity - protectedRows.length)];
   }
   throwIfAborted(signal);
   if (reranker && remaining() <= 0) {

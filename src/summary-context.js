@@ -2,7 +2,7 @@ import { clone, estimateUnits, stableStringify, yieldLocalWork, throwIfAborted }
 import { iterateChineseTokens } from './retrieval.js';
 import { sourceTimeline } from './source-consistency.js';
 import {markMemoryStates} from './memory-current-state.js';
-import {explicitSubjectNames,numericFactProjection} from './product-person-profiles.js';
+import {explicitSubjectNames,numericFactProjection,currentAttributeRecords} from './product-person-profiles.js';
 import {foldName} from './name-fold.js';
 
 // Storage proofs stay in the repository. Model context needs exact identifiers,
@@ -56,7 +56,14 @@ function* summaryContextSteps(records, messages, {budgetUnits=6000, maxRecords=4
   for (const [category, rows] of Object.entries(records??{})) {
     if (!Array.isArray(rows) || ['history','summaryView','conflicts','coverage'].includes(category) || categories && !categories.includes(category)) continue;
     selected[category]=[];
-    for (const original of category==='entityFactChanges'?numericFactProjection(rows):rows) {
+    let eligible=rows;
+    if(category==='entityFactChanges'){
+      const projected=numericFactProjection(rows);
+      const {older}=currentAttributeRecords(projected.map(record=>({...record,category})));
+      const past=new Set(older.map(record=>record.id));
+      eligible=projected.filter(record=>!past.has(record.id)||(record.sourceRefs??[]).some(ref=>sourceIds.has(ref.sourceId)));
+    }
+    for (const original of eligible) {
       yield;
       if(historical.has(original.id))continue;
       const record=summaryRecord(original);

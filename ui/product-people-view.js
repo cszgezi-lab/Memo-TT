@@ -2,7 +2,7 @@ import { foldName, personaIdentity } from '../src/persona-identity.js';
 import { currentPersonaProfiles } from '../src/dynamic-persona.js';
 import { recordImportance, recordDescription } from '../src/product-memory.js';
 import { characterKeepsakes } from '../src/character-journal.js';
-import { characterRecordSubjects, explicitSubjectNames, factKey } from '../src/product-person-profiles.js';
+import { characterRecordSubjects, explicitSubjectNames, factKey, factValue, cashUnit, attributeFieldGroups } from '../src/product-person-profiles.js';
 import { sourceLabel, recordTitle, epistemicLabel } from '../src/product-narrative.js';
 import { esc } from '../src/product-settings-ui.js';
 import {PERSONA_GENDERS,PERSONA_ROLES,personaCasting,personaCastingLabel,personaAttentionWeight,applyPersonaCasting} from '../src/persona-casting.js';
@@ -114,19 +114,22 @@ export function peopleGroups(snapshot = {}) {
     attach(names, 'dialogues', row);
     attach(names, 'records', row.record);
   }
-  return [...groups.values()].map(group => ({
+  return [...groups.values()].map(group => {
+    const attributeFields=attributeFieldGroups(group.facts,group.name);
+    return {
     ...group,
     casting:applyPersonaCasting({name:group.name,casting:group.profiles[0]?.casting},snapshot.dynamicPersona?.castingOverrides).casting,
     userDirectives:Object.hasOwn(snapshot.dynamicPersona?.directiveOverrides??{},nameKey(group.name))?snapshot.dynamicPersona.directiveOverrides[nameKey(group.name)]:group.profiles[0]?.userDirectives??[],
     indexWords:(dictionary.entries??[]).find(e=>nameKey(e.name)===nameKey(group.name))?.indexWords??[],
     profileSources: group.profiles,
     profiles: currentPersonaProfiles(group.profiles, settings.dynamicPersonaMvuMode),
-    fieldCount: new Set(group.facts.map(factKey).filter(k => k != null)).size,
+    attributeFields, fieldCount: attributeFields.length,
     relationships: newestFirst(group.relationships),
     relationshipThreads: relationshipThreads(group.relationships, name => identity.resolve(name)?.key ?? nameKey(name)),
     commitments: newestFirst(markMemoryStates(group.commitments,{dictionary})),
     personaChanges: newestFirst(group.personaChanges),
-  })).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+    };
+  }).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
 }
 
 export function peopleHTML() {
@@ -262,10 +265,19 @@ export function peopleDetailHTML(group, allProfiles = group?.profiles ?? [], edi
   const profileRows = group.profiles.slice(0, 2).map(p => personFieldRow({
     label: p.locked ? '整份档案 · 已锁定' : `整份档案 · ${Number.isInteger(p.through) ? `依据至 #${p.through}` : '已保存'}`,
     value: p.text, source: `${sourceText(p)}${[...new Map((p.bindings ?? []).map(b => [JSON.stringify([b.book, b.uid]), b])).values()].slice(0, 4).map(b => `${b.book} · ${b.originalName ?? b.name}（原书只读）`).join(' · ')}`, category: 'dynamic-persona', id: p.id, clamp: 3,
-  })).join('') || `<p class="memo-help">还没有动态人设档案。${openButton(group, 'dynamic-persona', '补建档案', profileId)}</p>`;  const factRows = group.facts.map(record => personFieldRow({
-    label: `${factKey(record) ?? '属性'}`, value: recordDescription(record).replace(/^[^：]*：/, ''),
+  })).join('') || `<p class="memo-help">还没有动态人设档案。${openButton(group, 'dynamic-persona', '补建档案', profileId)}</p>`;
+  const factRow=(record,label)=>personFieldRow({
+    label, value: typeof factValue(record)==='number'&&cashUnit(record)
+      ? `${factValue(record)}${cashUnit(record)}` : recordDescription(record).replace(/^[^：]*：/, ''),
     source: sourceText(record), category: 'entityFactChanges', id: record.id, clamp: 1,
-  })).join('');
+  });
+  const factRows=(group.attributeFields??attributeFieldGroups(group.facts,group.name)).map(({field,current,older})=>{
+    const label=record=>[cashUnit(record),record.account,record.scope??record.context].filter(Boolean).join(' · ');
+    const values=current.map(record=>factRow(record,label(record)||field)).join('');
+    const history=older.length?`<details class="memo-state-history"><summary>历史与来源 ${older.length} 条</summary>${older.map(record=>factRow(record,label(record)||field)).join('')}</details>`:'';
+    if(current.length===1&&!label(current[0]))return values+history;
+    return `<div class="memo-card"><strong>${esc(field)}</strong>${values}${history}</div>`;
+  }).join('');
   const personRows = (rows, category) => rows.map(record => personFieldRow({
     label: recordTitle(record), value: recordDescription(record), source: sourceText(record), category, id: record.id, clamp: 3,
   })).join('');
