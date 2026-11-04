@@ -37,8 +37,26 @@ export function paintPlannedBatchPreview(node,state,kind='memory'){
 
 export function batchManagementHTML(){return `<details class="memo-compact-management"><summary>管理</summary><p data-batch-plan class="memo-help"></p>
   <div class="memo-batch-filters">${field('查找批次','<input data-batch-search placeholder="楼层、批号或侧重点">')}${field('状态','<select data-batch-status><option value="active">当前批次</option><option value="saved">已完成</option><option value="failed">失败 / 中断</option><option value="pending">待处理 / 待应用</option><option value="deleted">已删除 / 可恢复</option></select>')}</div>
-  <div class="memo-top memo-batch-browse"><p data-batch-total class="memo-help" role="status"></p><button type="button" data-batch-select-toggle aria-pressed="false" aria-expanded="false">多选</button></div>
-  <div class="memo-batch-selection-toolbar" data-batch-selection-toolbar role="group" aria-label="所选总结批次操作" hidden><p data-selected-count class="memo-help" role="status" aria-live="polite"></p><label class="memo-field" data-retry-parallel-control hidden><span>并行批数（1–${MAX_PARALLEL_SUMMARY_BATCHES}）</span><input type="number" min="1" max="${MAX_PARALLEL_SUMMARY_BATCHES}" step="1" value="2" inputmode="numeric" data-retry-parallel-count></label><button type="button" data-bulk="retry">重试所选</button><details class="memo-batch-more memo-context-more" data-batch-selection-more><summary>更多</summary><div class="memo-context-actions"><button type="button" data-batch-details>查看详情</button><button type="button" data-bulk="delete">删除所选</button><button type="button" data-bulk="restore" hidden>恢复所选</button><button type="button" data-bulk="regenerate">重新生成</button><button type="button" data-batch-split-selected>拆小所选</button><button type="button" data-batch-apply-prefix>应用已完成部分</button><button type="button" data-select-page>选择本页</button><button type="button" data-select-filter>选择全部筛选结果</button><button type="button" data-clear-selection>清空选择</button></div></details></div>
+  <p data-batch-total class="memo-help" role="status"></p>
+  <div class="memo-batch-selection" data-batch-selection>
+    <div class="memo-batch-selection-top">
+      <button type="button" data-batch-select-toggle aria-pressed="false" aria-expanded="false">多选批次</button>
+      <div class="memo-batch-selection-header" data-batch-selection-header hidden>
+        <strong data-selected-count role="status" aria-live="polite"></strong>
+        <button type="button" data-select-page>全选本页</button><button type="button" data-clear-selection>清空</button>
+      </div>
+    </div>
+    <div class="memo-batch-selection-toolbar" data-batch-selection-toolbar role="group" aria-label="所选总结批次操作" hidden>
+      <div class="memo-batch-selection-actions">
+        <button type="button" class="memo-primary" data-bulk="regenerate">重新生成</button>
+        <label class="memo-field" data-retry-parallel-control hidden><span>并行批数</span><input type="number" min="1" max="${MAX_PARALLEL_SUMMARY_BATCHES}" step="1" value="2" inputmode="numeric" data-retry-parallel-count></label>
+      </div>
+      <div class="memo-batch-selection-actions">
+        <button type="button" data-bulk="retry">重试所选</button><button type="button" data-bulk="delete">删除所选</button><button type="button" data-bulk="restore" hidden>恢复所选</button>
+      </div>
+      <details class="memo-batch-more memo-context-more" data-batch-selection-more><summary>更多操作</summary><div class="memo-context-actions"><button type="button" data-batch-details>查看详情</button><button type="button" data-batch-split-selected>拆小所选</button><button type="button" data-batch-apply-prefix>应用已完成部分</button><button type="button" data-select-filter>全选筛选结果</button></div></details>
+    </div>
+  </div>
   <div class="memo-card" data-batch-selection-detail hidden></div><div data-batches></div><div class="memo-batch-pagination" data-batch-pagination><button type="button" data-batch-prev>上一页</button><span data-batch-page></span><button type="button" data-batch-next>下一页</button></div>
   <details class="memo-batch-options"><summary>显示与索引维护</summary>${field('每页','<select data-batch-size-list><option>10</option><option>20</option><option selected>50</option></select>')}<label class="memo-field memo-page-jump"><span>跳到第几页</span><input type="number" min="1" data-batch-jump value="1"><button type="button" data-batch-go>跳转</button></label><details class="memo-advanced" data-vector-maintenance><summary>补建未完成索引</summary><p class="memo-help">只补索引，不重做总结。</p><button type="button" data-retry-batch-vectors-all>立即补建全部未完成索引</button></details></details></details>`;}
 const statusNames={queued:'待处理',running:'处理中',saved:'已保存',failed:'失败，可重试',interrupted:'中断，可重试',deleted:'已删除'};
@@ -62,15 +80,26 @@ export function mountBatchList({panel,app,run,host}){
     const parallel=rows.some(canRetryInParallel);
     const regenerate=allowsParallelRegeneration(s,rows);
     retryControl.hidden=!parallel&&!regenerate;
-    $('[data-bulk="regenerate"]').textContent=regenerate?'并行重新生成':'重新生成';
+    const regenerateButton=$('[data-bulk="regenerate"]');
+    regenerateButton.textContent=regenerate?'并行重新生成':'按顺序重生';
+    regenerateButton.hidden=!rows.length||rows.every(b=>b.status==='deleted');
     retryCount.disabled=false;
     retryButton.textContent=parallel?'并行重试所选':'重试所选';
     $('[data-batch-selection-toolbar]').hidden=!selecting||!rows.length;
+    $('[data-batch-selection-header]').hidden=!selecting;
     if(!rows.length)$('[data-batch-selection-more]').open=false;
-    const toggle=$('[data-batch-select-toggle]');toggle.textContent=selecting?'取消多选':'多选删除';toggle.setAttribute('aria-pressed',String(selecting));toggle.setAttribute('aria-expanded',String(selecting));
+    const toggle=$('[data-batch-select-toggle]');toggle.textContent=selecting?'退出多选':'多选批次';toggle.setAttribute('aria-pressed',String(selecting));toggle.setAttribute('aria-expanded',String(selecting));
+    $('[data-batches]').dataset.selecting=String(selecting);
     for(const label of panel.querySelectorAll('[data-batch-check]'))label.hidden=!selecting;
+    for(const input of panel.querySelectorAll('[data-select-batch]'))input.checked=selected.has(input.dataset.selectBatch);
     for(const button of panel.querySelectorAll('[data-retry-batch-vectors-all]'))button.disabled=s.busy;
-    $('[data-selected-count]').textContent=`已选 ${selected.size} 批（跨页保留）${rows.some(b=>b.replacement&&!b.savedOperationId)?'；成功候选尚未应用，可在此应用连续已完成前段。':''}`;
+    $('[data-selected-count]').textContent=`已选 ${selected.size} 批`;
+    const recycled=$('[data-batch-status]').value==='deleted';
+    retryButton.hidden=recycled||!rows.some(b=>['queued','failed','interrupted'].includes(b.status));
+    $('[data-bulk="delete"]').hidden=recycled;
+    $('[data-bulk="delete"]').textContent=`删除所选 ${selected.size} 批`;
+    $('[data-bulk="restore"]').hidden=!recycled;
+    $('[data-clear-selection]').disabled=!rows.length;
     const unavailable=rows.some(b=>b.status==='running'||s.queuedBatchActions?.some(item=>item.id===b.id));
     for(const button of panel.querySelectorAll('[data-bulk]')){
       const canQueue=['retry','regenerate'].includes(button.dataset.bulk);
@@ -82,12 +111,21 @@ export function mountBatchList({panel,app,run,host}){
     for(const button of panel.querySelectorAll('[data-select-page],[data-select-filter]'))button.disabled=false;
     if(selected.size!==1)$('[data-batch-selection-detail]').hidden=true;
   }
-  $('[data-batch-select-toggle]')?.addEventListener('click',()=>{selecting=!selecting;if(!selecting)selected.clear();paint(readViewState(app));});
+  const refreshSelection=()=>selectionState(readViewState(app));
+  $('[data-batch-select-toggle]')?.addEventListener('click',()=>{
+    selecting=!selecting;
+    if(selecting)for(const row of panel.querySelectorAll('[data-batch-id][open]'))row.open=false;
+    else selected.clear();
+    refreshSelection();
+  });
   $('[data-retry-incomplete]')?.addEventListener('click',event=>run(()=>app.retryIncompleteBatches(),{name:'focus-summary',button:event.currentTarget}));
   $('[data-retry-batch-vectors-all]')?.addEventListener('click',event=>run(()=>app.retryVectors(),{name:'vectors',button:event.currentTarget}));
-  $('[data-select-page]')?.addEventListener('click',()=>{for(const b of pageSummaryBatches(readViewState(app).batches,pageOptions()).items)selected.add(b.id);paint(readViewState(app));});
-  $('[data-select-filter]')?.addEventListener('click',()=>{const options={...pageOptions(),pageSize:50};const first=pageSummaryBatches(readViewState(app).batches,options);for(let page=1;page<=first.pages;page++)for(const b of pageSummaryBatches(readViewState(app).batches,{...options,page}).items)selected.add(b.id);paint(readViewState(app));});
-  $('[data-clear-selection]')?.addEventListener('click',()=>{selected.clear();paint(readViewState(app));});
+  $('[data-select-page]')?.addEventListener('click',()=>{
+    for(const row of panel.querySelectorAll('[data-batch-id]'))if(!row.hidden)selected.add(row.dataset.batchId);
+    refreshSelection();
+  });
+  $('[data-select-filter]')?.addEventListener('click',()=>{const options={...pageOptions(),pageSize:50};const first=pageSummaryBatches(readViewState(app).batches,options);for(let page=1;page<=first.pages;page++)for(const b of pageSummaryBatches(readViewState(app).batches,{...options,page}).items)selected.add(b.id);refreshSelection();});
+  $('[data-clear-selection]')?.addEventListener('click',()=>{selected.clear();refreshSelection();});
   $('[data-batch-details]')?.addEventListener('click',()=>{const s=readViewState(app),id=[...selected][0],b=s.batches.find(b=>b.id===id),node=$('[data-batch-selection-detail]');if(!b||!node)return;node.innerHTML=`<b>批次 · ${b.startIndex}–${b.endIndex} 楼</b><p class="memo-help">${b.replacementReady&&b.replacement&&!['saved','deleted'].includes(b.status)?'已生成，待应用':batchStateText(b)}</p><div data-batch-body></div>`;fill(node,b,s);node.hidden=false;node.scrollIntoView?.({block:'nearest'});});
   for(const button of panel.querySelectorAll('[data-bulk]'))button.addEventListener('click',()=>run(async()=>{
     const ids=[...selected],action=button.dataset.bulk,label={retry:'重试',regenerate:'重新生成',delete:'删除',restore:'恢复'}[action];
@@ -157,17 +195,28 @@ export function mountBatchList({panel,app,run,host}){
     const p=pageSummaryBatches(s.batches??[],{query:$('[data-batch-search]')?.value??'',status:$('[data-batch-status]')?.value??'active',page:currentPage,pageSize:Number($('[data-batch-size-list]')?.value??20)});if($('[data-batches]').dataset.unifiedAll==='true'){const options={query:$('[data-batch-search]')?.value??'',status:$('[data-batch-status]')?.value??'active',pageSize:50};const first=pageSummaryBatches(s.batches??[],options);p.items=Array.from({length:first.pages},(_,i)=>pageSummaryBatches(s.batches??[],{...options,page:i+1}).items).flat();p.page=1;p.pages=1;}currentPage=p.page;
     $('[data-batch-pagination]').hidden=p.pages<=1;
     for(const id of selected)if(!s.batches.some(b=>b.id===id))selected.delete(id);selectionState(s);
-    const recycled=$('[data-batch-status]')?.value==='deleted';if($('[data-batch-recycle]'))$('[data-batch-recycle]').textContent=`回收站（${p.deletedTotal}）`;
+    if($('[data-batch-recycle]'))$('[data-batch-recycle]').textContent=`回收站（${p.deletedTotal}）`;
     const pending=(s.batches??[]).filter(b=>['queued','running','failed','interrupted'].includes(b.status)),latest=[...(s.batches??[])].sort((a,b)=>(b.updatedAt??b.createdAt??0)-(a.updatedAt??a.createdAt??0)).find(b=>b.plan)?.plan;
     const waiting=(s.queuedSummaryPlans??[]).map(p=>`${p.requested.startIndex}–${p.requested.endIndex} 楼（${p.plannedBatches} 批）`);
     if($('[data-batch-plan]'))$('[data-batch-plan]').textContent=`未完成或待应用总结 ${pending.length} 批${latest?`；最近计划 ${latest.startIndex}–${latest.endIndex} 楼，每 ${latest.batchSize} 楼一批`:''}。${waiting.length?`已排队 ${waiting.join('、')}，等待当前任务结束。`:''}`;
-    for(const button of panel.querySelectorAll('[data-bulk]'))button.hidden=recycled?button.dataset.bulk!=='restore':button.dataset.bulk==='restore';
-    const signature=JSON.stringify([batchRevision??p,p.items.map(b=>b.id),p.page,p.total,s.busy,s.queuedBatchActions,s.modules,p.items.map(b=>s.batchVectors?.[b.id]),selecting,[...selected]]);if(signature===lastPaint)return;lastPaint=signature;
+    const signature=JSON.stringify([batchRevision??p,p.items.map(b=>b.id),p.page,p.total,s.busy,s.queuedBatchActions,s.modules,p.items.map(b=>s.batchVectors?.[b.id]),s.settings?.summaryStaged,s.settings?.summaryReviewEnabled]);if(signature===lastPaint)return;lastPaint=signature;
     const opened=new Set([...panel.querySelectorAll('[data-batch-id][open]')].map(n=>n.dataset.batchId));
     $('[data-batch-total]').textContent=`当前 ${p.currentTotal} 批 · 回收站 ${p.deletedTotal} 批 · 筛选出 ${p.total} 批`;$('[data-batch-page]').textContent=`${p.page} / ${p.pages} 页`;$('[data-batch-jump]').max=String(p.pages);if(!jumpDirty)$('[data-batch-jump]').value=String(p.page);$('[data-batch-prev]').disabled=p.page===1;$('[data-batch-next]').disabled=p.page===p.pages;
-    $('[data-batches]').innerHTML=p.items.map(b=>{const pendingApplication=Boolean(b.replacementReady&&b.replacement&&!['saved','deleted'].includes(b.status)),vector=s.batchVectors?.[b.id],indexAttention=b.status==='saved'&&(vector?.mixed||vector?.pending||vector?.status==='error');return `<details class="memo-card memo-batch-row" data-batch-id="${esc(b.id)}" data-compact-start="${b.startIndex}" ${opened.has(b.id)?'open':''}><summary><label class="memo-batch-check" data-batch-check ${selecting?'':'hidden'}><input type="checkbox" data-select-batch="${esc(b.id)}" aria-label="选择第 ${b.displayNumber} 批" ${selected.has(b.id)?'checked':''}><span class="memo-sr-only">选择第 ${b.displayNumber} 批</span></label><span class="memo-batch-title" data-compact-number aria-label="第 ${b.displayNumber} 批 · ${Number.isInteger(b.startIndex)?`${b.startIndex}–${b.endIndex} 楼`:'旧版未保存楼层号'}">${String(b.displayNumber).padStart(2,'0')}</span><span class="memo-batch-status" data-state="${esc(pendingApplication?'queued':b.partialSummary?.missingFloors?.length?'failed':b.status)}">${pendingApplication?'已生成，待应用':batchStateText(b)}${indexAttention?` · ${esc(batchVectorStatusText(vector))}`:''}</span></summary><div data-batch-body></div></details>`;}).join('')||'<p class="memo-empty">没有符合条件的批次。</p>';
+    $('[data-batches]').innerHTML=p.items.map(b=>{
+      const pendingApplication=Boolean(b.replacementReady&&b.replacement&&!['saved','deleted'].includes(b.status)),vector=s.batchVectors?.[b.id];
+      const indexAttention=b.status==='saved'&&(vector?.mixed||vector?.pending||vector?.status==='error');
+      const range=Number.isInteger(b.startIndex)?`${b.startIndex}–${b.endIndex} 楼`:'楼层未知';
+      return `<details class="memo-card memo-batch-row" data-batch-id="${esc(b.id)}" data-compact-start="${b.startIndex}" ${opened.has(b.id)?'open':''}><summary>
+        <label class="memo-batch-check" data-batch-check ${selecting?'':'hidden'}><input type="checkbox" data-select-batch="${esc(b.id)}" aria-label="选择第 ${b.displayNumber} 批，${range}" ${selected.has(b.id)?'checked':''}></label>
+        <span class="memo-batch-title" data-compact-number aria-label="第 ${b.displayNumber} 批 · ${range}">${String(b.displayNumber).padStart(2,'0')}</span>
+        <span class="memo-batch-status" data-state="${esc(pendingApplication?'queued':b.partialSummary?.missingFloors?.length?'failed':b.status)}">${pendingApplication?'已生成，待应用':batchStateText(b)}${indexAttention?` · ${esc(batchVectorStatusText(vector))}`:''}</span>
+        <small class="memo-batch-range">${range}</small></summary><div data-batch-body></div></details>`;
+    }).join('')||'<p class="memo-empty">没有符合条件的批次。</p>';
     for(const label of panel.querySelectorAll('[data-batch-check]'))label.addEventListener('click',e=>e.stopPropagation());
-    for(const input of panel.querySelectorAll('[data-select-batch]')){input.addEventListener('click',e=>e.stopPropagation());input.addEventListener('change',()=>{input.checked?selected.add(input.dataset.selectBatch):selected.delete(input.dataset.selectBatch);selectionState(readViewState(app));lastPaint='';});}
+    for(const input of panel.querySelectorAll('[data-select-batch]')){
+      input.addEventListener('click',e=>e.stopPropagation());
+      input.addEventListener('change',()=>{input.checked?selected.add(input.dataset.selectBatch):selected.delete(input.dataset.selectBatch);refreshSelection();});
+    }
     for(const node of panel.querySelectorAll('[data-batch-id]')){const b=p.items.find(b=>b.id===node.dataset.batchId);if(node.open)fill(node,b,s);node.addEventListener('toggle',()=>{if(node.open&&!node.querySelector('[data-batch-body]').hasChildNodes())fill(node,b,readViewState(app));});}
   }
   function revealBatch(id){

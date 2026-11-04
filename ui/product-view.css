@@ -555,7 +555,7 @@
 #memo-product-shell .memo-batch-row>summary:not(:has(.memo-batch-check)){grid-template-columns:minmax(0,1fr)}
 #memo-product-shell .memo-batch-row>summary:not(:has(.memo-batch-check)) :is(.memo-batch-title,.memo-batch-status){grid-column:1}
 #memo-product-shell .memo-batch-row .memo-batch-title{font-size:13px}
-#memo-product-shell .memo-batch-selection-toolbar{padding:8px 0;border-block:1px solid var(--memo-border);margin:8px 0}
+#memo-product-shell .memo-batch-range{display:none}
 #memo-product-shell :is(.memo-batch-options,.memo-batch-selection-toolbar details)>summary{min-height:44px;font-size:13px}
 #memo-product-shell .memo-persona-batch-row:not(:has(.memo-batch-check:not([hidden]))){grid-template-columns:minmax(0,1fr)}
 #memo-product-shell .memo-persona-batch-row small{font-size:12px}
@@ -1191,6 +1191,31 @@
 #memo-product-shell .memo-unified-batch-grid :is(.memo-batch-card,.memo-compact-batch){margin:0;min-width:0}
 #memo-product-shell .memo-unified-batch-grid :is(.memo-batch-card,.memo-compact-batch)>summary{min-height:32px!important;padding:4px 6px!important;font-size:12px!important;gap:5px}
 #memo-product-shell .memo-unified-batch-grid .memo-batch-row>summary{min-height:32px!important;padding:4px 6px!important;font-size:12px!important;gap:5px}
+#memo-product-shell .memo-batch-selection{min-width:0;margin:8px 0}
+#memo-product-shell .memo-batch-selection:has([aria-pressed="true"]){padding:10px;border:1px solid var(--memo-border);border-radius:8px;background:#2a2028}
+#memo-product-shell .memo-batch-selection :is(.memo-batch-selection-top,.memo-batch-selection-header,.memo-batch-selection-actions){display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-width:0}
+#memo-product-shell .memo-batch-selection-header{flex:1 1 168px}
+#memo-product-shell .memo-batch-selection-header strong{flex:1 0 auto;color:#e5c88f;font-size:12px}
+#memo-product-shell .memo-batch-selection [hidden]{display:none!important}
+#memo-product-shell .memo-batch-selection :is(button,[data-batch-selection-more]>summary){min-height:44px;padding:6px 9px;font-size:12px}
+#memo-product-shell .memo-batch-selection-toolbar{display:grid;gap:8px;border-top:1px solid var(--memo-border);margin-top:8px;padding-top:8px}
+#memo-product-shell .memo-batch-selection-actions:not(:has(>:not([hidden]))){display:none}
+#memo-product-shell .memo-batch-selection-actions>button{flex:1 1 104px}
+#memo-product-shell .memo-batch-selection [data-retry-parallel-control]{display:flex;align-items:center;gap:6px;margin:0;color:#cdb68e;font-size:12px}
+#memo-product-shell .memo-batch-selection [data-retry-parallel-count]{width:56px;min-height:44px;padding:4px 6px;text-align:center}
+#memo-product-shell .memo-batch-selection [data-bulk="delete"]{color:#efb7ac;border-color:#9c594f}
+#memo-product-shell .memo-batch-selection [data-batch-selection-more]>summary{width:max-content;max-width:100%;box-sizing:border-box}
+#memo-product-shell .memo-unified-batch-grid:has(>[data-batches][data-selecting="true"]){grid-template-columns:repeat(auto-fill,minmax(min(100%,86px),1fr))}
+#memo-product-shell .memo-unified-batch-grid [data-selecting="true"]>.memo-batch-row>summary{
+  position:relative;display:grid;grid-template-columns:16px auto 6px;justify-content:center;align-content:center;gap:3px 5px;
+  min-height:52px!important;padding:5px!important;cursor:pointer;
+}
+#memo-product-shell .memo-unified-batch-grid [data-selecting="true"] .memo-batch-check{min-width:0;min-height:0;grid-column:auto;grid-row:auto}
+#memo-product-shell .memo-unified-batch-grid [data-selecting="true"] [data-select-batch]{width:16px;height:16px;min-width:16px;min-height:16px;accent-color:#c4a05d}
+#memo-product-shell .memo-unified-batch-grid [data-selecting="true"] .memo-batch-check::after{content:"";position:absolute;inset:0}
+#memo-product-shell .memo-unified-batch-grid [data-selecting="true"] .memo-batch-status{grid-column:3;grid-row:1}
+#memo-product-shell .memo-unified-batch-grid [data-selecting="true"] .memo-batch-range{display:block;grid-column:1/-1;color:#baa384;font-size:10px;text-align:center;overflow-wrap:anywhere}
+#memo-product-shell [data-batches][data-selecting="true"]>.memo-batch-row:has([data-select-batch]:checked){background:#563344;border-color:#d8b16d;box-shadow:inset 0 0 0 1px #d8b16d}
 #memo-product-shell .memo-unified-pagination{gap:5px;font-size:11px;margin:10px 0;justify-content:flex-start}
 #memo-product-shell .memo-unified-pagination :is(button,select){min-height:30px!important;height:30px;padding:2px 5px;font-size:11px}
 #memo-product-shell .memo-unified-pagination select{width:48px}
