@@ -1207,13 +1207,14 @@
 #memo-product-shell .memo-batch-selection [data-batch-selection-more]>summary{width:max-content;max-width:100%;box-sizing:border-box}
 #memo-product-shell .memo-unified-batch-grid:has(>[data-batches][data-selecting="true"]){grid-template-columns:repeat(auto-fill,minmax(min(100%,86px),1fr))}
 #memo-product-shell .memo-unified-batch-grid [data-selecting="true"]>.memo-batch-row>summary{
-  position:relative;display:grid;grid-template-columns:16px auto 6px;justify-content:center;align-content:center;gap:3px 5px;
+  position:relative;display:grid;grid-template-columns:auto 6px;justify-content:center;align-content:center;gap:3px 5px;
   min-height:52px!important;padding:5px!important;cursor:pointer;
 }
-#memo-product-shell .memo-unified-batch-grid [data-selecting="true"] .memo-batch-check{min-width:0;min-height:0;grid-column:auto;grid-row:auto}
-#memo-product-shell .memo-unified-batch-grid [data-selecting="true"] [data-select-batch]{width:16px;height:16px;min-width:16px;min-height:16px;accent-color:#c4a05d}
-#memo-product-shell .memo-unified-batch-grid [data-selecting="true"] .memo-batch-check::after{content:"";position:absolute;inset:0}
-#memo-product-shell .memo-unified-batch-grid [data-selecting="true"] .memo-batch-status{grid-column:3;grid-row:1}
+#memo-product-shell .memo-unified-batch-grid [data-selecting="true"] .memo-batch-check{position:absolute;inset:0;z-index:1;grid-area:auto;min-width:0;min-height:0}
+#memo-product-shell .memo-unified-batch-grid [data-selecting="true"] [data-select-batch]{position:absolute;opacity:0;width:1px;height:1px;min-width:0;min-height:0}
+#memo-product-shell .memo-unified-batch-grid [data-selecting="true"] .memo-batch-check:has(:focus-visible){outline:2px solid #e5c88f;outline-offset:-4px}
+#memo-product-shell .memo-unified-batch-grid [data-selecting="true"] .memo-batch-title{grid-column:1;grid-row:1}
+#memo-product-shell .memo-unified-batch-grid [data-selecting="true"] .memo-batch-status{grid-column:2;grid-row:1}
 #memo-product-shell .memo-unified-batch-grid [data-selecting="true"] .memo-batch-range{display:block;grid-column:1/-1;color:#baa384;font-size:10px;text-align:center;overflow-wrap:anywhere}
 #memo-product-shell [data-batches][data-selecting="true"]>.memo-batch-row:has([data-select-batch]:checked){background:#563344;border-color:#d8b16d;box-shadow:inset 0 0 0 1px #d8b16d}
 #memo-product-shell .memo-unified-pagination{gap:5px;font-size:11px;margin:10px 0;justify-content:flex-start}
