@@ -149,7 +149,8 @@ export function mountBatchList({panel,app,run,host}){
     for(const id of selected)if(!s.batches.some(b=>b.id===id))selected.delete(id);selectionState(s);
     const recycled=$('[data-batch-status]')?.value==='deleted';if($('[data-batch-recycle]'))$('[data-batch-recycle]').textContent=`回收站（${p.deletedTotal}）`;
     const pending=(s.batches??[]).filter(b=>['queued','running','failed','interrupted'].includes(b.status)),latest=[...(s.batches??[])].sort((a,b)=>(b.updatedAt??b.createdAt??0)-(a.updatedAt??a.createdAt??0)).find(b=>b.plan)?.plan;
-    if($('[data-batch-plan]'))$('[data-batch-plan]').textContent=`未完成或待应用总结 ${pending.length} 批${latest?`；最近计划 ${latest.startIndex}–${latest.endIndex} 楼，每 ${latest.batchSize} 楼一批`:''}。`;
+    const waiting=(s.queuedSummaryPlans??[]).map(p=>`${p.requested.startIndex}–${p.requested.endIndex} 楼（${p.plannedBatches} 批）`);
+    if($('[data-batch-plan]'))$('[data-batch-plan]').textContent=`未完成或待应用总结 ${pending.length} 批${latest?`；最近计划 ${latest.startIndex}–${latest.endIndex} 楼，每 ${latest.batchSize} 楼一批`:''}。${waiting.length?`已排队 ${waiting.join('、')}，等待当前任务结束。`:''}`;
     for(const button of panel.querySelectorAll('[data-bulk]'))button.hidden=recycled?button.dataset.bulk!=='restore':button.dataset.bulk==='restore';
     const signature=JSON.stringify([batchRevision??p,p.items.map(b=>b.id),p.page,p.total,s.busy,s.queuedBatchActions,s.modules,p.items.map(b=>s.batchVectors?.[b.id]),selecting,[...selected]]);if(signature===lastPaint)return;lastPaint=signature;
     const opened=new Set([...panel.querySelectorAll('[data-batch-id][open]')].map(n=>n.dataset.batchId));

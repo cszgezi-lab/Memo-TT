@@ -102,7 +102,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  </section>
  <div data-summary-overview hidden><div class="memo-phone-workflows" data-phone-workflows role="tablist" aria-label="总结类型"><button type="button" id="memo-phone-tab-memory" data-phone-workflow="memory" role="tab" aria-selected="true" aria-controls="memo-phone-panel-memory"><b>记忆</b><small data-phone-workflow-status="memory" hidden></small></button><button type="button" id="memo-phone-tab-persona" data-phone-workflow="persona" role="tab" aria-selected="false" aria-controls="memo-phone-panel-persona"><b>人设</b><small data-phone-workflow-status="persona" hidden></small></button></div><div data-summary-modules>${summaryModulesHTML()}</div><details class="memo-card memo-summary-utilities"><summary>复盘与进度检查</summary><div class="memo-feature-switches" aria-label="启用功能"><button type="button" data-feature="memory" aria-pressed="false" aria-describedby="memo-memory-feature-status">记忆功能</button><span id="memo-memory-feature-status" data-feature-status="memory" class="memo-sr-only">未启用</span><button type="button" data-feature="persona" aria-pressed="false" aria-describedby="memo-persona-feature-status">动态人设</button><span id="memo-persona-feature-status" data-feature-status="persona" class="memo-sr-only">未启用</span></div><button type="button" data-action="auto-inspect">检查进度</button>${memoryRetrospectiveHTML()}<details class="memo-summary-settings memo-tag-settings" data-tag-settings><summary>标签管理</summary>${extractionHTML({embedded:true})}</details></details></div>
  <details class="memo-card" data-record-tools hidden><summary>记忆更新设置</summary><div class="memo-record-tabs" hidden><button type="button" data-record-tab="compose" class="active">手动总结</button><button type="button" data-record-tab="automatic">自动总结</button><button type="button" data-record-tab="presets">主总结设置</button><button type="button" data-record-tab="dynamic-persona">人设更新设置</button></div>
- <section data-view="recording" hidden><div data-record-panel="compose"><div class="memo-card"><h4>手动总结</h4>${field('总结范围','<select data-range-mode><option value="recent">最近 N 楼</option><option value="range">指定起止楼层</option></select>')}<div data-range-fields="recent">${field('最近多少楼','<input type="number" min="1" max="100000" value="8" data-count>')}<p class="memo-help">最后一楼为 20、填 10，即整理 11–20。</p></div><div data-range-fields="range" hidden><div class="memo-grid">${field('从哪一楼','<input type="number" min="0" data-start placeholder="与聊天楼号相同" disabled>')}${field('到哪一楼','<input type="number" min="0" data-end placeholder="包含结束楼" disabled>')}</div></div>${field('每批楼数','<input type="number" min="1" max="200" value="10" data-batch-size>')}${field('并行批数（1–'+MAX_PARALLEL_SUMMARY_BATCHES+'）','<input type="number" min="1" max="'+MAX_PARALLEL_SUMMARY_BATCHES+'" step="1" value="2" inputmode="numeric" data-parallel-summary-count>')}<p class="memo-help" data-summary-selection role="status"></p>${field('本次想记得更细的内容','<textarea rows="3" data-focus placeholder="留空时沿用长期记录偏好"></textarea>')}<div class="memo-actions">${button('focus-summary','顺序总结')}${button('parallel-summary','并行补总结',true)}${button('stop','停止')}</div></div>${settingsSection('recording')}${button('save-settings','保存总结设置',true)}</div><div data-record-panel="automatic" hidden>${settingsSection('automatic')}</div><div data-record-panel="presets" hidden>${summaryPresetsHTML()}</div></section>
+ <section data-view="recording" hidden><div data-record-panel="compose"><div class="memo-card"><h4>手动总结</h4>${field('总结范围','<select data-range-mode><option value="recent">最近 N 楼</option><option value="range">指定起止楼层</option></select>')}<div data-range-fields="recent">${field('最近多少楼','<input type="number" min="1" max="100000" value="8" data-count>')}<p class="memo-help">最后一楼为 20、填 10，即整理 11–20。</p></div><div data-range-fields="range" hidden><div class="memo-grid">${field('从哪一楼','<input type="number" min="0" data-start placeholder="与聊天楼号相同" disabled>')}${field('到哪一楼','<input type="number" min="0" data-end placeholder="包含结束楼" disabled>')}</div></div>${field('每批楼数','<input type="number" min="1" max="200" value="10" data-batch-size>')}${field('并行批数（1–'+MAX_PARALLEL_SUMMARY_BATCHES+'）','<input type="number" min="1" max="'+MAX_PARALLEL_SUMMARY_BATCHES+'" step="1" value="2" inputmode="numeric" data-parallel-summary-count>')}<p class="memo-help" data-summary-selection role="status"></p><p class="memo-help" data-summary-queued role="status" hidden></p>${field('本次想记得更细的内容','<textarea rows="3" data-focus placeholder="留空时沿用长期记录偏好"></textarea>')}<div class="memo-actions">${button('focus-summary','顺序总结')}${button('parallel-summary','并行补总结',true)}${button('stop','停止')}</div></div>${settingsSection('recording')}${button('save-settings','保存总结设置',true)}</div><div data-record-panel="automatic" hidden>${settingsSection('automatic')}</div><div data-record-panel="presets" hidden>${summaryPresetsHTML()}</div></section>
  </details><section data-view="merge" hidden>${mergeManagementHTML()}</section>
  <section data-view="current" hidden><h3>本轮记忆</h3><p class="memo-help">本地预览不发送模型请求。向量与重排仅在启用且实际使用时调用。</p>${field('当前剧情查询','<textarea rows="3" data-query></textarea>')}${button('preview','预览本地召回',true)}${button('preview-online','按已启用接口试召回')}<div data-preview></div><h3>最近一次请求准备</h3><div data-actual><p class="memo-empty">尚未向宿主请求加入记忆。</p></div></section>
  <section data-view="assistant" hidden><div class="memo-top"><h3>配置助手</h3><span data-model></span></div><div class="memo-actions"><button type="button" data-jump="api">模型设置</button><button type="button" data-jump="world">添加 TXT / MD / JSON</button></div><div class="memo-actions"><select data-conversation aria-label="历史对话"><option value="main">配置对话</option></select>${button('new-conversation','新对话')}${button('delete-conversation','删除本次对话')}</div><details class="memo-card" data-builtin-skills><summary>内置配置规则 v${ASSISTANT_SKILL_VERSION} · ${ASSISTANT_SKILLS.length} 组</summary>${ASSISTANT_SKILLS.map(skill=>`<details><summary>${esc(skill.title)}</summary><p class="memo-help">${esc(skill.text)}</p></details>`).join('')}</details><div data-history><p class="memo-empty">说说想怎样记忆，也可以一次说完全部要求。</p></div><div data-proposal></div>${field('你的要求','<textarea rows="4" data-input placeholder="描述你的卡、想保留的细节、希望避免的问题，或让我按导入的规则配置。"></textarea>')}<div class="memo-actions">${button('assistant','发送',true)}${button('builtin-beginner','按内置新手规则配置')}${button('beginner','按导入的规则配置')}${button('assistant-stop','停止')}</div><p class="memo-help">Key 不会发送给助手；设置方案应用后才生效。</p></section>
@@ -505,6 +505,8 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
    }
    // Background diagnostic persistence must not erase a visible operation error.
    if(noticeLevel==='error'&&$('[data-status]'))$('[data-status]').textContent=noticeText;
+    const waiting=$('[data-summary-queued]'),queued=s.queuedSummaryPlans??[];
+    if(waiting){waiting.hidden=!queued.length;waiting.textContent=queued.map(p=>`已排队 ${p.requested.startIndex}–${p.requested.endIndex} 楼 · ${p.plannedBatches} 批`).join('；');}
     floating?.setBusy(s.busy||modelRequests.size>0);
     floating?.setTaskMonitor(s.taskMonitor);
     if(floating?.window.hidden)return;
@@ -588,6 +590,7 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
  async function run(fn,{name='',action=name,button:control}={}){
 const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'}连接测试`:name.startsWith('save-')?'保存设置':({'dynamic-persona':'动态人设操作','journal-write':'更新角色记录','custom-save-module':'保存区块','custom-save-module-value':'保存记录','custom-read-mvu':'读取 MVU','custom-import-modules':'导入区块',deletePerson:'删除人物',deleteRecord:'删除记录',open:'启用自动任务',assistant:'配置助手',beginner:'规则配置',summarize:'总结','focus-summary':'总结','parallel-summary':'并行补总结',analyze:'分析资料',vectors:'建立向量索引',import:'导入文件',remember:'保存记事'})[name];
    const isSummary=['summarize','focus-summary','parallel-summary'].includes(name),isModels=name.startsWith('models-'),before=lastFeedbackId;
+   if(control?.matches?.('[data-action="focus-summary"],[data-action="parallel-summary"]'))control=null;
    const oldLabel=control?.textContent;if(label){feedback(`${label}中…`,'running');if(control){control.disabled=true;control.textContent=`${label}中…`;}}
    try{const result=await fn();painting.request();if(name.startsWith('test-')&&result?.message)feedback(`${API_INFO[name.slice(5)]?.title??'模型'}：${result.message}`,result.level??'info',true);else if(name==='vectors'&&result?.message)feedback(result.message,result.pending?'warning':'success',true);else if(result?.message&&result?.level&&!isSummary)feedback(result.message,result.level,true);else if(name==='dynamic-persona')feedback(result?.message??'操作已处理；状态与进度见本页动态人设卡。','info');else if(name==='extraction')feedback('正文提取操作完成；预览和保存状态见当前页面。','success');else if(label&&!isSummary&&!isModels)feedback(`${label}完成`,'success',true);}
    catch(e){void app.reportError?.(e,{stage:'ui',...(Object.hasOwn(DIAGNOSTIC_ACTIONS,action)?{action}:{})});const text=`${label??'操作'}未完成：${failureText(e)}`;if($('[data-status]'))$('[data-status]').textContent=text;if(!isSummary||before===lastFeedbackId)feedback(text,['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(e?.code)?'info':'error',!['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(e?.code));}
@@ -600,27 +603,35 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
    const preview=$('[data-summary-selection]');if(!preview)return;
    try{const value=selectedSummary(false);preview.textContent=mode==='range'?`本次：${value.startIndex}–${value.endIndex} 楼，共 ${value.endIndex-value.startIndex+1} 楼，每 ${value.batchSize} 楼一批。`:`本次：最近 ${value.count} 楼，每 ${value.batchSize} 楼一批。`;}catch{preview.textContent=mode==='range'?'请填写起止楼层。':'请填写楼数与每批楼数。';}
  }
- async function summarize(withFocus){
-   const options=selectedSummary(withFocus);
-   if(!app.previewSummary)return app.summarize(options);
-   const preview=await app.previewSummary(options);
-   const extra=[...preview.prefix,...preview.suffix].map(r=>`${r.startIndex}–${r.endIndex} 楼`).join('、');
-   const text=`本次 ${preview.requested.startIndex}–${preview.requested.endIndex} 楼，共 ${preview.plannedBatches} 批。${preview.grouped?'旧结果在整组成功后替换；失败保留旧记忆。':''}${preview.discardedTail?`完成后撤下旧 ${preview.discardedTail.startIndex}–${preview.discardedTail.endIndex} 楼，不重算后续；自动接续暂停，需主动继续。`:''}${extra?`为保留起点前的完整事实，另需重算 ${extra}，额外 ${preview.extraBatches} 批（已计入总数）。`:''}输入预算、分工或复核可能增加请求。`;
-   $('[data-summary-selection]').textContent=text;
-   if((preview.extraBatches||preview.discardedTail)&&await uiHost.confirm?.(text+' 是否继续？')!==true)return {status:'canceled'};
-   return app.summarize({...options,previewHash:preview.previewHash});
- }
- async function summarizeParallel(){
-   const options={...selectedSummary(),parallelConcurrency:Number($('[data-parallel-summary-count]').value)};
-   const preview=await app.previewSummary(options);
-   const shown=preview.ranges.slice(0,12).map(r=>`${r.startIndex}–${r.endIndex}`).join('、');
-   const more=preview.ranges.length>12?` 等 ${preview.ranges.length} 段`:'';
-   const description=preview.plannedBatches
-     ? `补 ${preview.plannedBatches} 批（${shown}${more}），同时最多 ${preview.concurrency} 批，共最多 ${preview.maxRequests} 次请求。跳过已有 ${preview.coveredFloors} 楼。各批只读本批正文。失败后暂停派发，已发出的请求仍会处理。`
-     : '这个范围没有待补楼层。';
-   $('[data-summary-selection]').textContent=description;
-   if(!preview.plannedBatches||await uiHost.confirm?.(description)!==true)return {status:'canceled'};
-   return app.summarize({...options,previewHash:preview.previewHash});
+ let preparingManualSummary=false;
+ function summarize(withFocus){return submitManualSummary(withFocus);}
+ function summarizeParallel(){return submitManualSummary(true,true);}
+ async function submitManualSummary(withFocus,parallel=false){
+   if(preparingManualSummary)return;
+   preparingManualSummary=true;
+   try{
+     const options=selectedSummary(withFocus);
+     if(parallel)options.parallelConcurrency=Number($('[data-parallel-summary-count]').value);
+     if(!app.previewSummary)return app.summarize(options);
+     const preview=await app.previewSummary(options);
+     const waiting=preview.waiting?'当前任务运行中。本次确认后先排队。':'';
+     let text,confirm;
+     if(parallel){
+       const shown=preview.ranges.slice(0,12).map(r=>`${r.startIndex}–${r.endIndex}`).join('、');
+       const more=preview.ranges.length>12?` 等 ${preview.ranges.length} 段`:'';
+       text=preview.plannedBatches
+         ? `${waiting}补 ${preview.plannedBatches} 批（${shown}${more}），同时最多 ${preview.concurrency} 批，共最多 ${preview.maxRequests} 次请求。跳过已有 ${preview.coveredFloors} 楼。各批只读本批正文。失败后暂停派发，已发出的请求仍会处理。`
+         : '这个范围没有待补楼层。';
+       confirm=Boolean(preview.plannedBatches);
+     }else{
+       const extra=[...preview.prefix,...preview.suffix].map(r=>`${r.startIndex}–${r.endIndex} 楼`).join('、');
+       text=`${waiting}本次 ${preview.requested.startIndex}–${preview.requested.endIndex} 楼，共 ${preview.plannedBatches} 批。${preview.grouped?'旧结果在整组成功后替换；失败保留旧记忆。':''}${preview.discardedTail?`完成后撤下旧 ${preview.discardedTail.startIndex}–${preview.discardedTail.endIndex} 楼，不重算后续；自动接续暂停，需主动继续。`:''}${extra?`为保留起点前的完整事实，另需重算 ${extra}，额外 ${preview.extraBatches} 批（已计入总数）。`:''}输入预算、分工或复核可能增加请求。`;
+       confirm=Boolean(preview.waiting||preview.extraBatches||preview.discardedTail);
+     }
+     $('[data-summary-selection]').textContent=text;
+     if(parallel&&!preview.plannedBatches||confirm&&await uiHost.confirm?.(text)!==true)return {status:'canceled'};
+     return app.summarize({...options,previewHash:preview.previewHash});
+   }finally{preparingManualSummary=false;}
  }
  async function download(data,name,{preferBrowser='picker'}={}){
     // Only a host-confirmed save may be reported as success. A dispatched

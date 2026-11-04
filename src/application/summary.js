@@ -12,16 +12,18 @@ import { runStorageOperation } from '../reliable-storage.js';
 /** summary orchestration. Dependencies are limited by service-contracts.js. */
 export function createSummaryService(appScope) {
 let parallelPreview=null;
+let manualPreview=null;
 const batchActions=[];
 let drainingBatchActions=false;
-async function prepareSummaryChat(){
-    if(appScope.following)await appScope.following;
-    if(appScope.active||appScope.opening)throw new Error('已有任务正在运行，请等待完成或停止');
+async function prepareSummaryChat({preview=false}={}){
+    if(appScope.following&&!appScope.active)await appScope.following;
+    if(appScope.opening||appScope.active&&!preview)throw new Error('已有任务正在运行，请等待完成或停止');
     const version=appScope.cancelVersion;appScope.hostAdapter??=new HostAdapter(appScope.host);
     let target;try{target=await appScope.hostAdapter.currentRef();}catch{throw Object.assign(new Error('无法读取 TT 当前聊天'),{code:'CHAT_REF_UNAVAILABLE'});}
     if(version!==appScope.cancelVersion)throw Object.assign(new Error('任务已停止'),{code:'CANCELED'});
     if(!target)throw Object.assign(new Error('TT 当前没有打开聊天'),{code:'CHAT_REF_UNAVAILABLE'});
-    if(appScope.workspace?.isCurrent()&&!appScope.state.stale&&appScope.boundRefKey===stableStringify(target)){if(appScope.state.sourceStatus?.pending)await appScope.refresh({boundOnly:true});return;}
+    if(appScope.workspace?.isCurrent()&&!appScope.state.stale&&appScope.boundRefKey===stableStringify(target)){if(appScope.state.sourceStatus?.pending&&!appScope.active)await appScope.refresh({boundOnly:true});return;}
+    if(appScope.active)throw Object.assign(new Error('当前聊天已变化，请重新打开后预览'),{code:'CHAT_CHANGED'});
     appScope.summaryFeedback('running','正在读取 TT 当前聊天…','manual');
     await appScope.open({enable:appScope.enabled,expectedRef:target});
     if(appScope.state.sourceStatus?.pending)await appScope.refresh({boundOnly:true});
@@ -29,11 +31,15 @@ async function prepareSummaryChat(){
 
 async function previewSummary(options={}){
     if(options.parallelConcurrency!==undefined)return previewParallel(options);
-    await prepareSummaryChat();const lastIndex=await appScope.core.historyTail(),list=await appScope.workspace.read('summary-batches',[]);
+    await prepareSummaryChat({preview:true});
+    const check=appScope.continuationCheck(),lastIndex=await appScope.core.historyTail();check();
+    const list=await appScope.workspace.read('summary-batches',[],{check});check();
     const size=options.batchSize??appScope.core.settings.summaryBatchSize;
     const ranges=planSummaryRanges({...options,count:options.count??appScope.core.settings.messageCount,lastIndex,batchSize:size});
     const plan=summaryOverwritePlan(ranges,list,size,lastIndex);
-    return {...plan,previewHash:appScope.overwriteHash(plan)};
+    const previewHash=appScope.overwriteHash(plan);
+    manualPreview={previewHash,requested:plan.requested,plannedBatches:plan.plannedBatches,selection:parallelSelection(options),settings:batchActionSettings(),check};
+    return {...plan,previewHash,waiting:Boolean(appScope.active||batchActions.length)};
   }
 
 const parallelSelection=options=>[options.count,options.startIndex,options.endIndex,options.batchSize,options.focus??'',options.parallelConcurrency,options.retryBatchIds];
@@ -47,13 +53,29 @@ function batchActionSettings(){
       'summaryRequestMode','summaryStreaming','summaryStaged','summaryReviewEnabled','inputBudgetUnits','outputBudgetUnits'].map(key=>settings[key])]);
   }
 
+function showBatchQueue(){
+    appScope.state.queuedBatchActions=batchActions.flatMap(item=>(item.ids??[]).map(id=>({id,action:item.action})));
+    appScope.state.queuedSummaryPlans=batchActions.filter(item=>item.action==='summary').map(({requested,plannedBatches,parallel})=>({requested,plannedBatches,parallel}));
+  }
+
 function finishBatchAction(entry){
     const index=batchActions.indexOf(entry);
     if(index<0)return;
     batchActions.splice(index,1);
     entry.op.signal.removeEventListener('abort',entry.cancel);
-    appScope.state.queuedBatchActions=batchActions.flatMap(item=>item.ids.map(id=>({id,action:item.action})));
+    showBatchQueue();
     entry.op.finish();
+  }
+
+function addBatchAction(details,message){
+    const op=appScope.begin(false),entry={...details,settings:batchActionSettings(),op};
+    entry.cancel=()=>finishBatchAction(entry);
+    batchActions.push(entry);
+    op.signal.addEventListener('abort',entry.cancel,{once:true});
+    showBatchQueue();
+    appScope.summaryFeedback('info',message,'manual');
+    wakeBatchActions();
+    return {status:'queued',requests:0,level:'info'};
   }
 
 function queueBatchAction(ids,action,options={}){
@@ -63,17 +85,29 @@ function queueBatchAction(ids,action,options={}){
       throw new Error('请选择可处理的批次');
     if(rows.some(b=>b.status==='running'||b.id===appScope.activeSummaryBatchId||appScope.activeSummaryOperation?.parallelBatchIds?.has(b.id)))
       return {status:'running',requests:0,level:'info'};
-    if(rows.some(b=>batchActions.some(entry=>entry.ids.includes(b.id))))return {status:'queued',requests:0,level:'info'};
-    const op=appScope.begin(false);
-    const entry={ids:rows.map(b=>b.id),action,options:{...options},settings:batchActionSettings(),
-      fingerprint:stableStringify(batchFingerprint(rows)),op};
-    entry.cancel=()=>finishBatchAction(entry);
-    batchActions.push(entry);
-    op.signal.addEventListener('abort',entry.cancel,{once:true});
-    appScope.state.queuedBatchActions=batchActions.flatMap(item=>item.ids.map(id=>({id,action:item.action})));
-    appScope.summaryFeedback('info',`${action==='regenerate'?'重新生成':'重试'} ${rows.length} 批已排队，当前任务结束后处理。`,'manual');
-    wakeBatchActions();
-    return {status:'queued',requests:0,level:'info'};
+    if(rows.some(b=>batchActions.some(entry=>entry.ids?.includes(b.id))))return {status:'queued',requests:0,level:'info'};
+    return addBatchAction({ids:rows.map(b=>b.id),action,options:{...options},fingerprint:stableStringify(batchFingerprint(rows))},
+      `${action==='regenerate'?'重新生成':'重试'} ${rows.length} 批已排队，当前任务结束后处理。`);
+  }
+
+function queueManualSummary(options){
+    const parallel=options.parallelConcurrency!==undefined,preview=parallel?parallelPreview:manualPreview;
+    if(!preview||!options.previewHash||options.previewHash!==preview.previewHash||
+      stableStringify(preview.selection)!==stableStringify(parallelSelection(options))||!parallel&&preview.settings!==batchActionSettings())
+      throw new Error('请重新预览待排队的总结范围');
+    preview.check();
+    const {requested}=preview,plannedBatches=parallel?preview.planned.length:preview.plannedBatches;
+    if(!plannedBatches)return {status:'complete',batches:0,requests:0};
+    const submission=sha256([requested,options.focus??'',options.batchSize,options.parallelConcurrency]);
+    if(appScope.activeSummaryOperation?.submission===submission||batchActions.some(entry=>entry.submission===submission)){
+      appScope.summaryFeedback('info','相同范围的总结已在处理队列中。','manual');
+      return {status:'queued',requests:0,level:'info'};
+    }
+    if(parallel)parallelPreview=null;
+    else manualPreview=null;
+    const frozen=parallel?{...options}:{...options,...requested};
+    return addBatchAction({action:'summary',options:frozen,plan:parallel?preview:null,parallel,requested,plannedBatches,submission},
+      `已排队 ${requested.startIndex}–${requested.endIndex} 楼，共 ${plannedBatches} 批。当前任务结束后处理。`);
   }
 
 function wakeBatchActions(){
@@ -84,6 +118,12 @@ function wakeBatchActions(){
         const entry=batchActions[0];
         try{
           entry.op.check();
+          if(entry.action==='summary'){
+            if(batchActionSettings()!==entry.settings)throw new Error('总结设置已变化，请重新预览');
+            await executeSummary(entry.options,entry.plan);
+            finishBatchAction(entry);
+            continue;
+          }
           await appScope.refresh({check:entry.op.check});entry.op.check();
           if(appScope.active||appScope.opening)break;
           const rows=entry.ids.map(id=>appScope.state.batches.find(b=>b.id===id));
@@ -103,11 +143,11 @@ function wakeBatchActions(){
     })().finally(()=>{drainingBatchActions=false;wakeBatchActions();});
   }
 
-function parallelRuntimes(check){
+function parallelRuntimes(check,{previewOnly=false}={}){
     const runtimes=new Map();
     return {
       get(focus){
-        if(!runtimes.has(focus))runtimes.set(focus,appScope.core.prepareParallelSummary({focus,check}));
+        if(!runtimes.has(focus))runtimes.set(focus,appScope.core.prepareParallelSummary({focus,check,previewOnly}));
         return runtimes.get(focus);
       },
       signatures:()=>[...runtimes].map(([focus,runtime])=>[focus,runtime.signature]),
@@ -115,14 +155,15 @@ function parallelRuntimes(check){
   }
 
 async function previewParallel(options){
-    await prepareSummaryChat();
+    await prepareSummaryChat({preview:true});
     const check=appScope.continuationCheck();
     const concurrency=options.parallelConcurrency;
     if(!Number.isInteger(concurrency)||concurrency<1||concurrency>MAX_PARALLEL_SUMMARY_BATCHES)throw new Error(`并行批数应为 1–${MAX_PARALLEL_SUMMARY_BATCHES} 的整数`);
     const batchSize=options.batchSize??appScope.core.settings.summaryBatchSize;
     const lastIndex=await appScope.core.historyTail();check();
-    await appScope.refresh({check});check();
-    const allRows=appScope.state.batches;
+    if(!appScope.active)await appScope.refresh({check});check();
+    const allRows=appScope.active?await appScope.workspace.read('summary-batches',[],{check}):appScope.state.batches;
+    check();
     let retryRows=null;
     if(options.retryBatchIds!==undefined){
       if(!Array.isArray(options.retryBatchIds)||!options.retryBatchIds.length)throw new Error('请选择要重试的批次');
@@ -155,7 +196,7 @@ async function previewParallel(options){
       return parts;
     });
     if(retryTargets?.some((row,i)=>i>0&&overlaps(row,retryTargets[i-1])))throw new Error('所选批次有重叠，请先处理其中一批');
-    const runtimes=parallelRuntimes(check);
+    const runtimes=parallelRuntimes(check,{previewOnly:true});
     const planned=[];
     async function admit(range){
       check();
@@ -181,15 +222,16 @@ async function previewParallel(options){
     check();
     const selection=parallelSelection(options),fingerprint=batchFingerprint(rows),signature=runtimes.signatures();
     const previewHash=sha256([appScope.workspace.scope,requested,selection,fingerprint,planned,signature]);
-    parallelPreview={previewHash,requested,selection,fingerprint,signature,planned,concurrency,retry:Boolean(retryTargets)};
+    parallelPreview={previewHash,requested,selection,fingerprint,signature,planned,concurrency,retry:Boolean(retryTargets),check};
     return {previewHash,requested,concurrency,plannedBatches:planned.length,maxRequests:planned.length,
-      ranges:planned.map(({startIndex,endIndex})=>({startIndex,endIndex})),coveredFloors:coverage.coveredFloors};
+      ranges:planned.map(({startIndex,endIndex})=>({startIndex,endIndex})),coveredFloors:coverage.coveredFloors,waiting:Boolean(appScope.active||batchActions.length)};
   }
 
-async function runParallel(options,diagnosticRun){
+async function runParallel(options,diagnosticRun,queuedPlan=null){
     await prepareSummaryChat();
-    const op=appScope.begin(),plan=parallelPreview;
-    parallelPreview=null;
+    const op=appScope.begin(),plan=queuedPlan??parallelPreview;
+    if(!queuedPlan)parallelPreview=null;
+    if(plan)op.submission=sha256([plan.requested,options.focus??'',options.batchSize,options.parallelConcurrency]);
     op.parallelBatchIds=new Set();
     op.monitor={trigger:'manual',phase:'preparing',completedBatches:0,totalBatches:plan?.planned.length??0,requestNumber:0,
       ...plan?.requested};
@@ -204,6 +246,7 @@ async function runParallel(options,diagnosticRun){
     try{
       if(!plan||plan.previewHash!==options.previewHash||stableStringify(plan.selection)!==stableStringify(parallelSelection(options)))
         throw new Error('请重新预览并行批次');
+      plan.check();
       if(!plan.planned.length)return {status:'complete',batches:0,requests:0};
       await appScope.refresh({check});check();
       const runtimes=parallelRuntimes(check);
@@ -308,8 +351,17 @@ async function publishSummaryReplacement(replacement,op){
     return true;
   }
 
-async function summarize(options={}){return appScope.logged('summary',run=>options.parallelConcurrency!==undefined
-    ?runParallel(options,run):summarizeTask({...options,diagnosticRun:run}),{trigger:options.trigger??'manual'});}
+function executeSummary(options,queuedPlan=null){
+    return appScope.logged('summary',run=>options.parallelConcurrency!==undefined
+      ?runParallel(options,run,queuedPlan):summarizeTask({...options,diagnosticRun:run}),{trigger:options.trigger??'manual'});
+  }
+
+async function summarize(options={}){
+    const newManual=(options.trigger??'manual')==='manual'&&!options.replaceBatchId&&!options.missingOnly&&!options.retryBatchIds;
+    if(newManual&&(appScope.active||batchActions.length))return queueManualSummary(options);
+    if(newManual&&options.previewHash&&options.previewHash===manualPreview?.previewHash)manualPreview.check();
+    return executeSummary(options);
+  }
 
 async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigger='manual',replaceBatchId=null,resume=false,rebuildCandidate=false,missingOnly=false,fullBatchesOnly=false,previewHash=null,diagnosticRun,allowInvalidToolRetry=false}={}){
     const taskStarted=Date.now();let firstRequestAt=null,modelMs=0,publishMs=0;
@@ -341,6 +393,7 @@ async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigg
       }
       const missing=missingOnly?missingSummaryRanges(coverage,batchSize,{fullBatchesOnly}):null;
       let ranges=missingOnly?missing.map(r=>({...r,startIndex:Math.max(r.startIndex,startIndex??r.startIndex),endIndex:Math.min(r.endIndex,endIndex??r.endIndex)})).filter(r=>r.startIndex<=r.endIndex):planSummaryRanges({count:count??appScope.core.settings.messageCount,startIndex,endIndex,lastIndex,batchSize});
+      if(ranges.length)op.submission=sha256([{startIndex:ranges[0].startIndex,endIndex:ranges.at(-1).endIndex},focus,batchSize,undefined]);
       if(!ranges.length){appScope.summaryFeedback('success','当前可处理楼层没有缺口；没有调用总结模型。',trigger);return {status:'complete',batches:0};}
       let groupId=makeId('summary-group');
       const list=await appScope.workspace.read('summary-batches',[]);

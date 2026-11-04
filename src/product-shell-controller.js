@@ -524,20 +524,22 @@ export function createProductShellController({
     return null;
   }
 
-  function configuredSummaryModel(){
+  function configuredSummaryModel({isolated=false}={}){
     if(!model&&!modelFactory){
       const {providerEndpoint,providerEndpointMode,providerModel,providerAuthMode,summaryDeadlineMs,deadlineMs,summaryStreaming,summaryRequestMode,outputBudgetUnits}=state.settings;
-      transport=transportFactory({providerEndpoint,providerEndpointMode,providerModel,providerAuthMode,deadlineMs:summaryDeadlineMs??deadlineMs,
+      const next=transportFactory({providerEndpoint,providerEndpointMode,providerModel,providerAuthMode,deadlineMs:summaryDeadlineMs??deadlineMs,
         summaryStreaming,summaryRequestMode,outputBudgetUnits},{sessionApiKey:state.sessionApiKey??'',fetchImpl});
+      if(isolated)return next?.status==='ready'?next.model:null;
+      transport=next;
     }
     return makeModel();
   }
 
-  function prepareParallelSummary({focus='',check=()=>{}}={}){
-    if(!state.session||!repository||activeTask)throw new Error('请先打开聊天并等待当前任务结束');
+  function prepareParallelSummary({focus='',check=()=>{},previewOnly=false}={}){
+    if(!state.session||!repository||activeTask&&!previewOnly)throw new Error('请先打开聊天并等待当前任务结束');
     const settings=state.settings,session=state.session,repo=repository,token=currentToken();
     if(settings.summaryStaged||settings.summaryReviewEnabled)throw new Error('并行补总结每批只发一次请求。当前启用了分工或原文复核，请用顺序总结或先调整总结设置。');
-    const summaryModel=configuredSummaryModel();
+    const summaryModel=configuredSummaryModel({isolated:previewOnly});
     if(!summaryModel)throw Object.assign(new Error('请先配置总结 API'),{code:'MODEL_UNAVAILABLE'});
     const validate=summaryBundleValidator();
     const rules=freezeSummaryRules([settings.recordingRules,settings.skillEvidenceEnabled===true?SKILL_RECORDING_RULE:'',runtimeRules({currentOnly:true})].filter(Boolean).join('\n'),
@@ -568,13 +570,17 @@ export function createProductShellController({
       if(batch.sourceRevision!==row.parallelSourceRevision)throw Object.assign(new Error('本批正文已变化，请重新预览'),{code:'SOURCE_INVALIDATED'});
       return batch;
     };
-    return {
+    const preview={
       signature,recipe,
       async inspect(range){
         const batch=await read(range,range.operationId);
         await engine().checkSingleRequest(batch);
         return batch.sourceRevision;
       },
+    };
+    if(previewOnly)return preview;
+    return {
+      ...preview,
       async generate(row,{signal,parallelGroup,parallelLimit,onDiagnostic}){
         const batch=await readFrozen(row);
         const cached=await repo.readPrivateTask(session.scope,row.operationId);
