@@ -1,7 +1,8 @@
 import { readViewState } from '../src/product-view-scheduling.js';
 import { esc,field } from '../src/product-settings-ui.js';
 import { CATEGORY_LABELS,recordDescription,readable,renderMemoryCard,memoryCards } from '../src/product-memory.js';
-import { MEMORY_CATEGORIES,pageSummaryBatches } from '../src/product-batches.js';
+import { MEMORY_CATEGORIES,pageSummaryBatches,canRetryInParallel } from '../src/product-batches.js';
+import { MAX_PARALLEL_SUMMARY_BATCHES } from '../src/provider-scheduler.js';
 import { hasNewerSavedCoverage } from '../src/product-auto-summary.js';
 import { parseModuleField } from '../src/product-custom-modules.js';
 
@@ -37,7 +38,7 @@ export function paintPlannedBatchPreview(node,state,kind='memory'){
 export function batchManagementHTML(){return `<details class="memo-compact-management"><summary>管理</summary><p data-batch-plan class="memo-help"></p>
   <div class="memo-batch-filters">${field('查找批次','<input data-batch-search placeholder="楼层、批号或侧重点">')}${field('状态','<select data-batch-status><option value="active">当前批次</option><option value="saved">已完成</option><option value="failed">失败 / 中断</option><option value="pending">待处理 / 待应用</option><option value="deleted">已删除 / 可恢复</option></select>')}</div>
   <div class="memo-top memo-batch-browse"><p data-batch-total class="memo-help" role="status"></p><button type="button" data-batch-select-toggle aria-pressed="false" aria-expanded="false">多选</button></div>
-  <div class="memo-batch-selection-toolbar" data-batch-selection-toolbar role="group" aria-label="所选总结批次操作" hidden><p data-selected-count class="memo-help" role="status" aria-live="polite"></p><details class="memo-batch-more memo-context-more" data-batch-selection-more><summary>更多</summary><div class="memo-context-actions"><button type="button" data-batch-details>查看详情</button><button type="button" data-bulk="retry">重试所选</button><button type="button" data-bulk="delete">删除所选</button><button type="button" data-bulk="restore" hidden>恢复所选</button><button type="button" data-bulk="regenerate">重新生成</button><button type="button" data-batch-split-selected>拆小所选</button><button type="button" data-batch-apply-prefix>应用已完成部分</button><button type="button" data-select-page>选择本页</button><button type="button" data-select-filter>选择全部筛选结果</button><button type="button" data-clear-selection>清空选择</button></div></details></div>
+  <div class="memo-batch-selection-toolbar" data-batch-selection-toolbar role="group" aria-label="所选总结批次操作" hidden><p data-selected-count class="memo-help" role="status" aria-live="polite"></p><label class="memo-field" data-retry-parallel-control hidden><span>并行批数（1–${MAX_PARALLEL_SUMMARY_BATCHES}）</span><input type="number" min="1" max="${MAX_PARALLEL_SUMMARY_BATCHES}" step="1" value="2" inputmode="numeric" data-retry-parallel-count></label><button type="button" data-bulk="retry">重试所选</button><details class="memo-batch-more memo-context-more" data-batch-selection-more><summary>更多</summary><div class="memo-context-actions"><button type="button" data-batch-details>查看详情</button><button type="button" data-bulk="delete">删除所选</button><button type="button" data-bulk="restore" hidden>恢复所选</button><button type="button" data-bulk="regenerate">重新生成</button><button type="button" data-batch-split-selected>拆小所选</button><button type="button" data-batch-apply-prefix>应用已完成部分</button><button type="button" data-select-page>选择本页</button><button type="button" data-select-filter>选择全部筛选结果</button><button type="button" data-clear-selection>清空选择</button></div></details></div>
   <div class="memo-card" data-batch-selection-detail hidden></div><div data-batches></div><div class="memo-batch-pagination" data-batch-pagination><button type="button" data-batch-prev>上一页</button><span data-batch-page></span><button type="button" data-batch-next>下一页</button></div>
   <details class="memo-batch-options"><summary>显示与索引维护</summary>${field('每页','<select data-batch-size-list><option>10</option><option>20</option><option selected>50</option></select>')}<label class="memo-field memo-page-jump"><span>跳到第几页</span><input type="number" min="1" data-batch-jump value="1"><button type="button" data-batch-go>跳转</button></label><details class="memo-advanced" data-vector-maintenance><summary>补建未完成索引</summary><p class="memo-help">只补索引，不重做总结。</p><button type="button" data-retry-batch-vectors-all>立即补建全部未完成索引</button></details></details></details>`;}
 const statusNames={queued:'待处理',running:'处理中',saved:'已保存',failed:'失败，可重试',interrupted:'中断，可重试',deleted:'已删除'};
@@ -47,9 +48,20 @@ export function batchVectorStatusText(v){return !v?'索引待检查':v.mixed?'�
 export function batchRecordDescription(r,modules=[]){const tag=parseModuleField(r.field??r.key),m=modules.find(m=>m.id===tag?.moduleId),f=m?.fields.find(f=>f.id===tag?.fieldId);return f?`${m.name} · ${r.entity??m.subject} · ${f.label}：${readable(r.to??r.value??r.newValue)}`:recordDescription(r);}
 export function mountBatchList({panel,app,run,host}){
   const $=s=>panel.querySelector?.(s);let currentPage=1,lastPaint='',lastScope='',batchRevision=null,batchSnapshot=[],jumpDirty=false,selecting=false;const selected=new Set();
+  const retryButton=$('[data-bulk="retry"]'),manualCount=$('[data-parallel-summary-count]');
+  const retryControl=$('[data-retry-parallel-control]'),retryCount=$('[data-retry-parallel-count]');
+  if(manualCount){
+    retryCount.value=manualCount.value;
+    manualCount.addEventListener('input',()=>{retryCount.value=manualCount.value;});
+    retryCount.addEventListener('input',()=>{manualCount.value=retryCount.value;});
+  }
   const pageOptions=()=>({query:$('[data-batch-search]').value,status:$('[data-batch-status]').value,page:currentPage,pageSize:Number($('[data-batch-size-list]').value)});
   function selectionState(s){
     const rows=(s.batches??[]).filter(b=>selected.has(b.id)),single=rows.length===1?rows[0]:null;
+    const parallel=rows.some(canRetryInParallel);
+    retryControl.hidden=!parallel;
+    retryCount.disabled=s.busy;
+    retryButton.textContent=parallel?'并行重试所选':'重试所选';
     $('[data-batch-selection-toolbar]').hidden=!selecting||!rows.length;
     if(!rows.length)$('[data-batch-selection-more]').open=false;
     const toggle=$('[data-batch-select-toggle]');toggle.textContent=selecting?'取消多选':'多选删除';toggle.setAttribute('aria-pressed',String(selecting));toggle.setAttribute('aria-expanded',String(selecting));
@@ -70,7 +82,22 @@ export function mountBatchList({panel,app,run,host}){
   $('[data-select-filter]')?.addEventListener('click',()=>{const options={...pageOptions(),pageSize:50};const first=pageSummaryBatches(readViewState(app).batches,options);for(let page=1;page<=first.pages;page++)for(const b of pageSummaryBatches(readViewState(app).batches,{...options,page}).items)selected.add(b.id);paint(readViewState(app));});
   $('[data-clear-selection]')?.addEventListener('click',()=>{selected.clear();paint(readViewState(app));});
   $('[data-batch-details]')?.addEventListener('click',()=>{const s=readViewState(app),id=[...selected][0],b=s.batches.find(b=>b.id===id),node=$('[data-batch-selection-detail]');if(!b||!node)return;node.innerHTML=`<b>批次 · ${b.startIndex}–${b.endIndex} 楼</b><p class="memo-help">${b.replacementReady&&b.replacement&&!['saved','deleted'].includes(b.status)?'已生成，待应用':batchStateText(b)}</p><div data-batch-body></div>`;fill(node,b,s);node.hidden=false;node.scrollIntoView?.({block:'nearest'});});
-  for(const button of panel.querySelectorAll('[data-bulk]'))button.addEventListener('click',()=>run(async()=>{const ids=[...selected],action=button.dataset.bulk,label={retry:'重试',regenerate:'重新生成',delete:'删除',restore:'恢复'}[action],scope=JSON.stringify(readViewState(app).core?.scope);if(!await host.confirm?.(`${label}所选 ${ids.length} 批？${action==='delete'?'仅删除所选批次，未应用候选不会改变旧正式记忆。可在设置中的回收站恢复，聊天原文不变。':action==='regenerate'?'将按楼层顺序调用总结模型，新结果成功后替换旧结果。':'只处理所选批次，已成功结果保留。'}`))return;checkScope(scope);await app.manageBatches(ids,action);selected.clear();paint(readViewState(app));},{name:button.dataset.bulk==='regenerate'?'focus-summary':'batch-management',button}));
+  for(const button of panel.querySelectorAll('[data-bulk]'))button.addEventListener('click',()=>run(async()=>{
+    const ids=[...selected],action=button.dataset.bulk,label={retry:'重试',regenerate:'重新生成',delete:'删除',restore:'恢复'}[action];
+    const state=readViewState(app),scope=JSON.stringify(state.core?.scope);
+    if(action==='retry'&&state.batches.some(b=>selected.has(b.id)&&canRetryInParallel(b))){
+      const options={retryBatchIds:ids,parallelConcurrency:retryCount.valueAsNumber};
+      const preview=await app.previewSummary(options);checkScope(scope);
+      if(!preview.plannedBatches)return;
+      const confirm=`并行重试 ${preview.plannedBatches} 批，同时最多 ${Math.min(preview.concurrency,preview.plannedBatches)} 批，最多 ${preview.maxRequests} 次总结请求。已有有效回复会复用。单批内容失败后继续其它所选批次，遇到连接或存储故障暂停。`;
+      if(!await host.confirm?.(confirm))return;
+      checkScope(scope);await app.summarize({...options,previewHash:preview.previewHash});
+    }else{
+      if(!await host.confirm?.(`${label}所选 ${ids.length} 批？${action==='delete'?'仅删除所选批次，未应用候选不会改变旧正式记忆。可在设置中的回收站恢复，聊天原文不变。':action==='regenerate'?'将按楼层顺序调用总结模型，新结果成功后替换旧结果。':'只处理所选批次，已成功结果保留。'}`))return;
+      checkScope(scope);await app.manageBatches(ids,action);
+    }
+    selected.clear();paint(readViewState(app));
+  },{name:['retry','regenerate'].includes(button.dataset.bulk)?'focus-summary':'batch-management',button}));
   const checkScope=scope=>{if(JSON.stringify(readViewState(app).core?.scope)!==scope)throw new Error('聊天已切换，请重新选择批次');};
   $('[data-batch-split-selected]')?.addEventListener('click',event=>run(async()=>{
     const s=readViewState(app),scope=JSON.stringify(s.core?.scope),rows=s.batches.filter(b=>selected.has(b.id));
