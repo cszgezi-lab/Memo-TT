@@ -133,13 +133,15 @@ export async function previewMemoryArchive({archive,session,check=()=>{}}){
  const origin=summaryOrigin(kept,{startFloor:progress.originFloor??1,originFloor:progress.originFloor});
  const nextSummaryFloor=summaryFrontier(kept,Math.min(origin,through+1));
  const plan={matchedThrough:through,summaryThrough,personaThrough,identicalThrough:prefix-1,totalCount:current.length,summaryBatches:kept.length,personaBatches:(persona?.batches??[]).filter(r=>r.status==='saved'&&r.endIndex<=personaThrough).length,nextSummaryFloor,requests:0};
- return {...plan,previewHash:sha256([archive.hash,session.refKey,current.map(descriptor),plan]),_sources:current.map(descriptor)};
+ return {...plan,previewHash:sha256([archive.hash,session.refKey,session.archive?.branchId??null,current.map(descriptor),plan]),_sources:current.map(descriptor)};
 }
 
-export async function importMemoryArchive({archive,session,global,previewHash,check=()=>{},beforeActivate=()=>{}}){
+export async function importMemoryArchive({archive,session,global,previewHash,check=()=>{}}){
  global=losslessStore(global);
- return memoStorageLock(global,'archive-import-'+sha256(session.scope),async()=>{
-  const target=bindingAddress(session.hostScope??session.scope);if((await optionalLegacyRead(global,target)).found)throw fail('此聊天已绑定档案；请在新的分支聊天导入，当前成果保留');
+ const hostScope=session.hostScope??session.scope,target=bindingAddress(hostScope);
+ return memoStorageLock(global,'archive-import-'+sha256(hostScope),async()=>{
+  const prior=await optionalLegacyRead(global,target);await check();
+  if((prior.value?.branchId??null)!==(session.archive?.branchId??null)||prior.found&&!prior.value?.branchId)throw fail('当前聊天启用的档案已变化，请重新打开聊天并比较');
   const plan=await previewMemoryArchive({archive,session,check});if(!previewHash||plan.previewHash!==previewHash)throw fail('聊天或档案已变化，请重新比较');
   if(plan.matchedThrough<0)throw fail('没有可继承的相同前缀，未创建绑定');
   const branchId=sha256(makeId('branch')).slice(0,32),store=losslessStore(archiveBranchStore(global,branchId));
@@ -163,11 +165,11 @@ export async function importMemoryArchive({archive,session,global,previewHash,ch
   await verifiedWrite(store,wp('ui'),{...(await read('ui')??{}),savedThrough:plan.nextSummaryFloor-1});
   await repo.readScope(archive.scope);await check();
   const current=await historySnapshot(session,check);if(sha256(current.map(descriptor))!==sha256(plan._sources))throw fail('导入期间聊天已变化，未启用分支；请重新比较');
-  const binding={kind:'memo-archive-binding',version:1,archiveId:archive.archiveId,branchId,scope:clone(archive.scope),hostScope:clone(session.hostScope??session.scope),sources:archive.sources.slice(0,plan.matchedThrough+1),matchedThrough:plan.matchedThrough,createdAt:Date.now()};
+  const binding={kind:'memo-archive-binding',version:1,archiveId:archive.archiveId,branchId,scope:clone(archive.scope),hostScope:clone(hostScope),sources:archive.sources.slice(0,plan.matchedThrough+1),matchedThrough:plan.matchedThrough,createdAt:Date.now()};
   // Final pointer is the sole activation write. Interrupted staging stays inert.
   await verifiedWrite(global,{namespace:NS,key:'branch-'+branchId},binding);await check();
-  await beforeActivate();await check();
-  if((await optionalLegacyRead(global,target)).found)throw fail('此聊天已绑定其他档案，原成果保留');
+  const latest=await optionalLegacyRead(global,target);await check();
+  if(stableStringify(latest)!==stableStringify(prior))throw fail('当前聊天启用的档案已变化，请重新打开聊天并比较');
   await verifiedWrite(global,target,binding);return {...plan,branchId,archiveId:binding.archiveId};
  });
 }

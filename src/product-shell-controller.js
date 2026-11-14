@@ -1012,10 +1012,7 @@ export function createProductShellController({
     async importMemoryArchive(archive,{previewHash,check:callerCheck=()=>{}}={}){
       if(!state.session||activeTask)throw new Error('请先打开聊天并等待任务结束');const session=state.session,token=currentToken();
       const check=async()=>{callerCheck();if(!tokenValid(token,session)||stableStringify(await adapterInstance.currentRef())!==session.refKey)throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});};
-      const assertEmpty=async()=>{const existing=await repository.readScope(session.scope),workspace=createWorkspace({store:sessionStore,scope:session.scope,isCurrent:()=>tokenValid(token,session)}),persona=await workspace.read('dynamic-persona'),batches=await workspace.read('summary-batches',[]);await check();
-        if(existing.committedRevision>0||batches.length||persona?.profiles?.length||persona?.batches?.length||persona?.manualPlan||persona?.batchRemoval)throw new Error('当前聊天已有记忆或人物档案，请在新的分支聊天导入；已有成果保留');};
-      await assertEmpty();
-      const {_sources,...result}=await importMemoryArchive({archive,session,global:await adapterInstance.getStore({scope:'extension'}),previewHash,check,beforeActivate:assertEmpty});return result;
+      const {_sources,...result}=await importMemoryArchive({archive,session,global:await adapterInstance.getStore({scope:'extension'}),previewHash,check});return result;
     },
     async readQualitySources(records){
       if(!state.session)throw Object.assign(new Error('请先打开聊天'),{code:'CHAT_REF_UNAVAILABLE'});
