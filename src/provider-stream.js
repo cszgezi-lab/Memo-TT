@@ -6,14 +6,27 @@ const invalid=(reason='stream_invalid',details={})=>{throw new SummaryResponseEr
 // Relays may append an empty legacy placeholder alongside modern tool_calls.
 // Accept only empty known fields; never consume an actual legacy tool call.
 const emptyLegacyCall=value=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.entries(value).every(([key,part])=>(key==='name'||key==='arguments')&&part==='');
+export function createEventStreamFraming(onData){
+  let pending='',trailingCR='',first=true;
+  function consume(event){
+    const data=event.split('\n').filter(line=>line.startsWith('data:')).map(line=>line.slice(5).replace(/^ /,'')).join('\n');
+    if(data.trim())onData(data);
+  }
+  function push(text){
+    text=trailingCR+String(text);trailingCR='';
+    if(first&&text.length){text=text.replace(/^\uFEFF/,'');first=false;}
+    if(text.endsWith('\r')){trailingCR='\r';text=text.slice(0,-1);}
+    pending+=text.replace(/\r\n?/g,'\n');
+    let boundary;while((boundary=pending.indexOf('\n\n'))>=0){const event=pending.slice(0,boundary);pending=pending.slice(boundary+2);consume(event);}
+  }
+  return {push,end(){if(trailingCR){trailingCR='';push('\n');}if(pending.trim())consume(pending);}};
+}
 // One decoder for byte streams and native buffered SSE. No partial answer is
 // exposed to the business layer; errors can terminate an open connection early.
 export function createChatEventStreamParser({allowUnmarkedJson=false}={}){
-  let pending='',trailingCR='',first=true,done=false,finish=null,usage,model,chunks=0,refusal='',tool=null;
+  let done=false,finish=null,usage,model,chunks=0,refusal='',tool=null;
   const content=[];
-  function consume(event){
-    const data=event.split('\n').filter(line=>line.startsWith('data:')).map(line=>line.slice(5).replace(/^ /,'')).join('\n');
-    if(!data.trim())return;
+  function consume(data){
     if(done)invalid('stream_invalid',{streamChunks:chunks});
     if(data.trim()==='[DONE]'){done=true;return;}
     let value;try{value=JSON.parse(data);}catch{invalid('stream_invalid',{streamChunks:chunks});}
@@ -53,16 +66,9 @@ export function createChatEventStreamParser({allowUnmarkedJson=false}={}){
     if(typeof delta.refusal==='string')refusal+=delta.refusal;
     if(choice.finish_reason!=null){if(finish)invalid('stream_invalid',{streamChunks:chunks});finish=choice.finish_reason;}
   }
-  function push(text){
-    text=trailingCR+String(text);trailingCR='';
-    if(first&&text.length){text=text.replace(/^\uFEFF/,'');first=false;}
-    if(text.endsWith('\r')){trailingCR='\r';text=text.slice(0,-1);}
-    pending+=text.replace(/\r\n?/g,'\n');
-    let boundary;while((boundary=pending.indexOf('\n\n'))>=0){const event=pending.slice(0,boundary);pending=pending.slice(boundary+2);consume(event);}
-  }
-  return {push,finish(){
-    if(trailingCR){trailingCR='';push('\n');}
-    if(pending.trim())consume(pending);
+  const framing=createEventStreamFraming(consume);
+  return {push:framing.push,finish(){
+    framing.end();
     const text=content.join('');
     // Some relays put a standalone prompt-rejection notice in delta.content,
     // then send usage and DONE without finish_reason. Match this observed

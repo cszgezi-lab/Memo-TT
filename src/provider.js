@@ -3,6 +3,7 @@ import { clone, sha256 } from './utils.js';
 import { diagnosticRequestId, errorDiagnostics, jsonFailure, contentType,upstreamErrorCode,upstreamErrorHint,upstreamErrorContext } from './diagnostics.js';
 import {scheduleDeadline} from './request-deadline.js';
 import {createChatEventStreamParser} from './provider-stream.js';
+import {createGeminiEventStreamParser,geminiEndpoint} from './provider-gemini.js';
 import {providerQueueScope} from './provider-scheduler.js';
 import {createResponseExcerpt} from './response-excerpt.js';
 
@@ -25,7 +26,7 @@ function trimSlashes(value) {
 
 function normalizeMode(profile) {
   const mode = profile?.endpointMode ?? profile?.mode ?? 'base';
-  if (mode !== 'base' && mode !== 'exact') throw new ShiyiError('endpoint mode must be base or exact', 'PROVIDER_PROFILE_INVALID');
+  if (!['base','exact','gemini'].includes(mode)) throw new ShiyiError('unsupported endpoint mode', 'PROVIDER_PROFILE_INVALID');
   return mode;
 }
 
@@ -49,10 +50,11 @@ function ensureUrl(value) {
  * Resolve only the resource selected by the caller.  In particular, `/v1` is
  * never added implicitly and exact mode does not attempt model-list guessing.
  */
-export function resolveProviderEndpoint(profile = {}, resource = 'chat') {
+export function resolveProviderEndpoint(profile = {}, resource = 'chat', payload = {}) {
   const mode = normalizeMode(profile);
   const input = profile.endpoint ?? profile.url ?? profile.baseUrl;
   const url = ensureUrl(input);
+  if (mode === 'gemini') return geminiEndpoint(url.href,resource,{model:payload.model??profile.model,stream:payload.stream});
   if (mode === 'exact') return String(input).trim();
   const path = resourcePath(resource, profile);
   const existing = url.pathname.replace(/\/$/u, '');
@@ -84,7 +86,8 @@ export function buildProviderHeaders(profile = {}, extra = {}) {
   const headers = { 'content-type': 'application/json', ...extra };
   const key = normalized.apiKey.trim();
   if (normalized.authMode === 'none' || !key) return headers;
-  if (normalized.authMode === 'api-key') headers[normalized.apiKeyHeader] = key;
+  if (normalized.endpointMode === 'gemini') headers['x-goog-api-key'] = key;
+  else if (normalized.authMode === 'api-key') headers[normalized.apiKeyHeader] = key;
   else if (normalized.authMode === 'custom') headers[normalized.apiKeyHeader] = key;
   else headers.authorization = `Bearer ${key}`;
   return headers;
@@ -169,7 +172,7 @@ async function readErrorBody(response,onBody,signal){
   finally{closed=true;clearTimeout(timer);controller.abort();signal?.removeEventListener('abort',relay);}
 }
 
-export async function parseProviderJson(response, { requireStatus = true, onMetadata=()=>{},onBody=()=>{},onResponseText=()=>{},allowStream=false,allowUnmarkedJson=false,signal } = {}) {
+export async function parseProviderJson(response, { requireStatus = true, onMetadata=()=>{},onBody=()=>{},onResponseText=()=>{},allowStream=false,allowUnmarkedJson=false,gemini=false,signal } = {}) {
   const status = Number(response?.status ?? response?.statusCode ?? 200);
   const mime=response?.headers?.get?.('content-type')??'';
   const metadata={status,statusKnown:response?.status!==undefined||response?.statusCode!==undefined,responseType:/json/i.test(mime)?'json':/html/i.test(mime)?'html':/text/i.test(mime)?'text':mime?'other':'unknown'};
@@ -185,7 +188,7 @@ export async function parseProviderJson(response, { requireStatus = true, onMeta
   }
   let text;
   if(allowStream){
-    const parser=createChatEventStreamParser({allowUnmarkedJson}),json=[],declaredStream=/event-stream/i.test(mime),prefixes=['data:','event:','id:','retry:'];let mode=null,probe='';
+    const parser=gemini?createGeminiEventStreamParser():createChatEventStreamParser({allowUnmarkedJson}),json=[],declaredStream=/event-stream/i.test(mime),prefixes=['data:','event:','id:','retry:'];let mode=null,probe='';
     await readBody(response,onBody,signal,{collect:false,onText:chunk=>{
       onResponseText(chunk);
       if(mode==='sse'){parser.push(chunk);return;}
@@ -223,23 +226,24 @@ export class ProviderClient {
     const started=Date.now(),observer=onDiagnostic??observers.get(this.fetch);let finished=false;
     const emit=(phase,details={},level='info')=>{if(finished)return;try{observer?.({phase,level,details:{requestId,purpose:purpose??resource,modelRole:this.modelRole,elapsedMs:Date.now()-started,...details}});}catch{/* diagnostics never fail a request */}};
     const serialized=JSON.stringify(payload??{});
-    const requestMeta={requestFingerprint:sha256(serialized),...(resource==='chat'?{streaming:payload?.stream===true,jsonMode:Boolean(payload?.response_format),messageCount:payload?.messages?.length??0}:{}),providerFingerprint:sha256({url:resolveProviderEndpoint(this.profile,resource),model:payload?.model??this.profile.model}),requestChars:serialized.length,requestBytes:new TextEncoder().encode(serialized).length};
+    const url=resolveProviderEndpoint(this.profile,resource,payload);
+    const requestMeta={requestFingerprint:sha256(serialized),...(resource==='chat'?{streaming:payload?.stream===true,jsonMode:Boolean(payload?.response_format),messageCount:payload?.messages?.length??0}:{}),providerFingerprint:sha256({url,model:payload?.model??this.profile.model}),requestChars:serialized.length,requestBytes:new TextEncoder().encode(serialized).length};
     let lease,networkStarted;
     try {
       const scheduler=resource==='chat'?schedulers.get(this.fetch):null;
       if(scheduler){
         const limits=[Number(rpmLimit),...(this.modelRole==='personaReview'?[5]:[])].filter(value=>Number.isFinite(value)&&value>0);
-        lease=await scheduler.acquire(providerQueueScope(resolveProviderEndpoint(this.profile,resource),buildProviderHeaders(this.profile,headers)),{signal,onWait:details=>emit('queued',details),rpmLimit:limits.length?Math.min(...limits):0,minIntervalMs,bypassForeground,...(this.modelRole==='summary'&&purpose==='summary'?{parallelGroup,parallelLimit}:{}),...(this.modelRole==='personaReview'?{priority:-1}:{})});
+        lease=await scheduler.acquire(providerQueueScope(url,buildProviderHeaders(this.profile,headers)),{signal,onWait:details=>emit('queued',details),rpmLimit:limits.length?Math.min(...limits):0,minIntervalMs,bypassForeground,...(this.modelRole==='summary'&&purpose==='summary'?{parallelGroup,parallelLimit}:{}),...(this.modelRole==='personaReview'?{priority:-1}:{})});
       }
       networkStarted=Date.now();
       emit('request',{stage:'request',...requestMeta,queueWaitMs:lease?.queueWaitMs??0,maxTokens:payload?.max_tokens??0,timeoutMs:timeoutMs??this.profile.timeoutMs});
-      return await this.performRequest(resource,payload,{signal,timeoutMs,headers,method,emit,allowUnmarkedJson});
+      return await this.performRequest(resource,payload,{url,signal,timeoutMs,headers,method,emit,allowUnmarkedJson});
     }
     catch(thrown){const error=thrown instanceof Error?thrown:new ShiyiError('provider threw a non-Error value','PROVIDER_REQUEST_FAILED');error.details={stage:'prepare',...requestMeta,...error.details,...lease?.finish(error),queueWaitMs:lease?.queueWaitMs??(networkStarted===undefined?Math.max(0,Date.now()-started):0),requestElapsedMs:networkStarted===undefined?0:Math.max(0,Date.now()-networkStarted),requestId,purpose:purpose??resource};emit(error.code==='CANCELED'?'canceled':'failed',errorDiagnostics(error),error.code==='CANCELED'?'warning':'error');throw error;}
     finally{lease?.finish();finished=true;}
   }
 
-  async performRequest(resource, payload, { signal, timeoutMs, headers, method, emit,allowUnmarkedJson }) {
+  async performRequest(resource, payload, { url, signal, timeoutMs, headers, method, emit,allowUnmarkedJson }) {
     const receivingStarted=Date.now(),receiveMeta={};
     const excerpt=createResponseExcerpt({secrets:[this.profile.apiKey]});
     const onBody=buffered=>{
@@ -247,7 +251,7 @@ export class ProviderClient {
       receiveMeta.firstBodyMs=Date.now()-receivingStarted;receiveMeta.bufferedBody=buffered;
       emit('body_start',{stage:'read_body',...receiveMeta});
     };
-    const url = resolveProviderEndpoint(this.profile, resource);
+    const gemini=this.profile.endpointMode==='gemini';
     const requestHeaders = buildProviderHeaders(this.profile, headers);
     const body=method !== 'GET' && method !== 'HEAD'?JSON.stringify(payload??{}):undefined;
     const controller = new AbortController();
@@ -279,9 +283,10 @@ export class ProviderClient {
     try {
       const result=await Promise.race([(async () => {
         if(controller.signal.aborted)throw new ShiyiError('request canceled','CANCELED');
-        const response=await this.fetch(url,init);
+        if(gemini&&typeof this.fetch.gemini!=='function')throw new ShiyiError('Gemini 原生需要 TauriTavern 的模型连接通道','PROVIDER_PROFILE_INVALID');
+        const response=gemini?await this.fetch.gemini(this.profile,resource,payload,init):await this.fetch(url,init);
         if(controller.signal.aborted){discardResponseBody(response);throw new ShiyiError('request canceled','CANCELED');}
-        return parseProviderJson(response,{allowStream:resource==='chat'&&payload?.stream===true,allowUnmarkedJson,onResponseText:text=>excerpt.push(text),signal:controller.signal,onBody,onMetadata:details=>{receiveMeta.responseHeadersMs=Date.now()-receivingStarted;emit('response',{...details,...receiveMeta,stage:'read_body'});}});
+        return parseProviderJson(response,{allowStream:resource==='chat'&&payload?.stream===true,allowUnmarkedJson,gemini,onResponseText:text=>excerpt.push(text),signal:controller.signal,onBody,onMetadata:details=>{receiveMeta.responseHeadersMs=Date.now()-receivingStarted;emit('response',{...details,...receiveMeta,stage:'read_body'});}});
       })(), canceled]);
       const message=result?.choices?.[0]?.message;
       emit('complete',{stage:'parse_envelope',...receiveMeta,...result?._shiyiStream,contentType:contentType(message?.content??result),responseChars:typeof message?.content==='string'?message.content.length:undefined,choicesCount:Array.isArray(result?.choices)?result.choices.length:undefined,toolCallsCount:message?.tool_calls?.length,finishReason:result?.choices?.[0]?.finish_reason,promptTokens:result?.usage?.prompt_tokens,completionTokens:result?.usage?.completion_tokens,totalTokens:result?.usage?.total_tokens},'success');

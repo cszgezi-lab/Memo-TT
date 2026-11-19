@@ -90,6 +90,12 @@ export function setting(key, label, help, placeholder = '') {
   return key==='aliases'?`<details class="memo-option-group"><summary>手动字典文本（高级）</summary>${html}</details>`:html;
 }
 const fields = keys => keys.map(key => setting(key)).join('');
+const chatFormats={base:'OpenAI 兼容',exact:'OpenAI 兼容 · 完整端点',gemini:'Gemini 原生'};
+function chatFormatField(prefix){
+  const key=prefix+'EndpointMode';
+  const options=registry[key].values.map(value=>`<option value="${value}">${chatFormats[value]}</option>`).join('');
+  return field('接口格式',`<select data-setting="${key}">${options}</select>`);
+}
 const advanced = (title, keys) => `<details class="memo-advanced memo-option-group"><summary>${title}</summary>${fields(keys)}</details>`;
 const card = (title, body) => `<details class="memo-card memo-option-group"><summary><h4>${title}</h4></summary>${body}</details>`;
 
@@ -131,7 +137,8 @@ export function apiSettingsHTML() {
     ${['assistant','supplement','knowledge'].includes(kind) ? setting(kind==='knowledge'?'knowledgeFollowAssistant':`${kind}FollowSummary`) + `<p class="memo-inherited memo-help" data-inherited="${kind}"></p>` : ''}
     <div data-api-fields="${kind}">
     <div data-api-connection="${kind}">
-    ${setting(`${prefix}Endpoint`, 'API 地址', kind==='summary'?'填写 OpenAI 兼容服务的 API 地址，可使用第三方转换桥。':`基础地址只补 ${resource}，不自动添加 /v1。`, '填写你的服务商地址')}
+    ${registry[`${prefix}EndpointMode`].values.includes('gemini')?chatFormatField(prefix):''}
+    ${setting(`${prefix}Endpoint`, 'API 地址', registry[`${prefix}EndpointMode`].values.includes('gemini')?'填写服务提供的地址。Gemini 原生可填反代基础地址，例如 http://127.0.0.1:8080。':`基础地址只补 ${resource}，不自动添加 /v1。`, '填写你的服务商地址')}
     ${field('API Key', `<input type="password" autocomplete="new-password" data-key="${kind}" placeholder="无需认证的服务可以留空"><small class="memo-help">随 API 保存到本机 TT 数据，重启自动恢复；不加入助手消息或拾忆导出。${['embedding','rerank'].includes(kind) ? '硅基流动需要填写 Key。' : ''}</small>`)}
     <p class="memo-help" data-key-status="${kind}" role="status"></p>
     </div>
@@ -139,7 +146,7 @@ export function apiSettingsHTML() {
     <label class="memo-field"><span class="memo-sr-only">${title}模型列表</span><select data-model-list="${kind}" disabled><option value="">先拉取模型列表，也可以在下方直接输入</option></select></label>
     ${setting(`${prefix}Model`, '模型名称', '', kind==='supplement'?'留空沿用总结模型；也可选择快速模型':'选择列表中的模型，或手动填写')}
     <p class="memo-help" role="status" data-model-status="${kind}"></p></div>
-    <details hidden class="memo-advanced memo-option-group" data-api-internals><summary hidden>连接参数</summary>${setting(`${prefix}EndpointMode`, '地址如何使用', `默认只补 ${resource}，绝不补 /v1。填完整接口地址时可选“不补路径”。`)}${setting(`${prefix}AuthMode`, 'Key 发送方式', '一般保持“标准 Key”；不需要 Key 可留空或选“无需 Key”。只有服务商明确要求时才改用 x-api-key。')}${field('模型列表地址（可选）', `<input data-models-url="${kind}" placeholder="留空时按 API 地址推导 /models" autocomplete="off">`)}${['embedding','rerank'].includes(kind) ? button(`recommend-${kind}`, '补齐推荐值') : ''}${button(`forget-key-${kind}`,'清除已保存 Key')}</details>
+    <details hidden class="memo-advanced memo-option-group" data-api-internals><summary hidden>连接参数</summary>${registry[`${prefix}EndpointMode`].values.includes('gemini')?'':setting(`${prefix}EndpointMode`, '地址如何使用', `默认只补 ${resource}，绝不补 /v1。填完整接口地址时可选“不补路径”。`)}${setting(`${prefix}AuthMode`, 'Key 发送方式', '一般保持“标准 Key”；不需要 Key 可留空或选“无需 Key”。只有服务商明确要求时才改用 x-api-key。')}${field('模型列表地址（可选）', `<input data-models-url="${kind}" placeholder="留空时按 API 地址推导 /models" autocomplete="off">`)}${['embedding','rerank'].includes(kind) ? button(`recommend-${kind}`, '补齐推荐值') : ''}${button(`forget-key-${kind}`,'清除已保存 Key')}</details>
     </div>${kind==='knowledge'?advanced('分析参数',['knowledgeOutputTokens']):''}<div class="memo-actions">${button(`save-api-${kind}`, '保存', true)}${button(`test-${kind}`, '测试连接')}</div></div></details>`;
   const entries=Object.entries(API_INFO).sort(([a],[b])=>order.indexOf(a)-order.indexOf(b));
   const group=(attribute,title,kinds)=>`<details class="memo-connection-group memo-option-group" ${attribute}><summary>${title}</summary>${entries.filter(([kind])=>kinds.includes(kind)).map(renderCard).join('')}</details>`;

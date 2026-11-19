@@ -41,7 +41,7 @@ const DEFINITIONS = [
   {key:'dynamicPersonaDeadlineMs',label:'人设请求超时（毫秒）',defaultValue:180000,type:'integer',min:1000,max:600000,consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaEndpoint',label:'动态人设 API 地址',defaultValue:'',type:'string',maxLength:2048,consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaModel',label:'动态人设模型',defaultValue:'',type:'string',maxLength:240,consumers:['DynamicPersonaController']},
-  {key:'dynamicPersonaEndpointMode',label:'动态人设地址模式',defaultValue:'base',type:'enum',values:['base','exact'],consumers:['DynamicPersonaController']},
+  {key:'dynamicPersonaEndpointMode',label:'动态人设地址模式',defaultValue:'base',type:'enum',values:['base','exact','gemini'],consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaAuthMode',label:'动态人设认证方式',defaultValue:'bearer',type:'enum',values:['none','bearer','api-key'],consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaPrompt',label:'动态人设预设',defaultValue:'',type:'string',maxLength:60000,consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaMvuMode',label:'人物演绎主次',defaultValue:'narrative',type:'enum',values:['narrative','strict'],consumers:['DynamicPersonaController']},
@@ -84,7 +84,7 @@ const DEFINITIONS = [
   { key: 'distributedStrategy', label: '分类通道策略', defaultValue: 'broadcast', type: 'enum', values: ['disabled', 'broadcast', 'leader_only'], consumers: ['ProductApplication.recall'] },
 
   { key: 'providerEndpoint', label: 'Provider 地址', defaultValue: '', type: 'string', maxLength: 2048, consumers: ['ProductShellController.transport', 'ProviderClient'] },
-  { key: 'providerEndpointMode', label: 'Provider 地址模式', defaultValue: 'base', type: 'enum', values: ['base', 'exact'], consumers: ['ProductShellController.transport', 'resolveProviderEndpoint'] },
+  { key: 'providerEndpointMode', label: 'Provider 地址模式', defaultValue: 'base', type: 'enum', values: ['base', 'exact','gemini'], consumers: ['ProductShellController.transport', 'resolveProviderEndpoint'] },
   { key: 'providerModel', label: '总结模型', defaultValue: '', type: 'string', maxLength: 240, consumers: ['ProductShellController.transport', 'SummaryEngine'] },
   { key: 'providerAuthMode', label: '认证模式', defaultValue: 'bearer', type: 'enum', values: ['none', 'bearer', 'api-key'], consumers: ['ProductShellController.transport', 'ProviderClient'] },
   { key: 'embeddingEndpoint', label: 'Embedding 地址', defaultValue: '', type: 'string', maxLength: 2048, consumers: ['ProductApplication.vector'] },

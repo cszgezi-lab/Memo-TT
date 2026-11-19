@@ -19,6 +19,10 @@ export function productApiProfile(settings, kind, keys = {}, patch = {}) {
 
 // Model discovery is a separate GET, never a change to the saved inference URL.
 export function modelListEndpoint(profile, explicit = '') {
+  if(profile.endpointMode==='gemini'){
+    if(explicit.trim())throw new Error('Gemini 原生的模型列表使用同一服务地址');
+    return resolveProviderEndpoint(profile,'models');
+  }
   const input = explicit.trim() || profile.endpoint;
   if (!input) throw new Error('请先填写 API 地址');
   let url;
@@ -44,6 +48,10 @@ export function normalizeModelList(response) {
 
 export async function fetchProductModels(profile, { fetchImpl, signal, modelsUrl = '',modelRole } = {}) {
   const endpoint=modelListEndpoint(profile,modelsUrl);
+  if(profile.endpointMode==='gemini'){
+    const client=new ProviderClient(profile,{fetchImpl,recordRequests:false,modelRole});
+    return normalizeModelList(await client.models({},{signal}));
+  }
   // A separate model-list address must not forward a saved provider key to another origin.
   const apiKey=new URL(endpoint).origin===new URL(profile.endpoint).origin?profile.apiKey:'';
   const client = new ProviderClient({ ...profile, apiKey, endpoint, endpointMode: 'exact' }, { fetchImpl, recordRequests: false,modelRole });
