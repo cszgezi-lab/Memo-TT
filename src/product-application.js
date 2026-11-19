@@ -259,7 +259,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   const state = { credentialSaved:{},credentialErrors:{}, modules:[],moduleSnapshots:[],moduleCurrent:[],mvuPaths:[],mvuStatus:'no_chat', status: 'unbound', message: '开始总结时自动读取 TT 当前聊天', cards: [], documents: [], history: [], batches: [], records: {}, conversations: [], conversationId: 'main', proposal: null, lastApplied: null, draft: '', preview: null, actual: null, progress: '', savedThrough: -1, hidden: [], stale: false };
   state.memoryRetrospective=retrospectiveState(null);
   const notify = () => { try { if(onInvalidate)onInvalidate();else onChange(publicState()); } catch { /* paint failure must not affect persistence */ } };
-  const runtimeLog=createRuntimeLog({getStore:globalStore,onChange:notify});
+  const runtimeLog=createRuntimeLog({getStore:globalStore,onChange:notify,canRecover:()=>!disposed});
   const providerScheduler=requestScheduler??createProviderScheduler({requestsPerMinute:()=>core.settings.chatRequestsPerMinute});
   const stopRequestScheduler=scheduleProviderRequests(fetchImpl,providerScheduler);
   const foregroundBusy=()=>foreground||injecting>0;

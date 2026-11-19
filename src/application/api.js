@@ -53,9 +53,9 @@ const application={previewSummary: appScope.previewSummary,splitSummaryBatch:(..
     },
     startChatTracking: appScope.startChatTracking,followCurrentChat: appScope.followCurrentChat,reviewMemory: appScope.reviewMemory,previewQuality: appScope.previewQuality,inspectQualityRecord: appScope.inspectQualityRecord,saveQualityRecord: appScope.saveQualityRecord,undoQuality: appScope.undoQuality,readViewState: appScope.readViewState,
     reviewMemoryConsistency: appScope.reviewMemoryConsistency,stopMemoryConsistency:()=>appScope.retrospectiveOperation?.abort(),undoMemoryConsistency: appScope.undoMemoryConsistency,
-    reportError: appScope.reportError,loadRuntimeLog:()=>appScope.runtimeLog.load(),exportRuntimeLog:async options=>{
-      const snapshot=await appScope.runtimeLog.export(options);let cachedFailureResponses=[],cachedFailureStatus='unavailable';
-      if(appScope.workspace?.isCurrent())try{
+    reportError: appScope.reportError,loadRuntimeLog:()=>appScope.runtimeLog.load(),exportRuntimeLog:async ({snapshotOnly=false,...options}={})=>{
+      const snapshot=await appScope.runtimeLog.export(options);let cachedFailureResponses=[],cachedFailureStatus=snapshotOnly?'omitted':'unavailable';
+      if(!snapshotOnly&&appScope.workspace?.isCurrent())try{
         const token=appScope.epoch,check=()=>appScope.assertCurrent(token);check();
         const batches=await appScope.workspace.read('summary-batches',[]);check();
         cachedFailureResponses=await appScope.core.exportCachedSummaryFailures(batches,{check,secrets:Object.values(appScope.keys??{})});check();cachedFailureStatus='read';

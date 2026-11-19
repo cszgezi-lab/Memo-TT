@@ -80,8 +80,9 @@ function safeEntry(value) {
 const COMPACT_KEYS=['action','reason','field','ruleIndex','kind','stage','storageStage','storageArtifact','saveStage','exportAttempt','exportBytes','hostOperations','code','errorType','causeErrorType','personaStep','personaIssue','personaField','profileIndex','editIndex','recoveryExhausted','modelRequested','modelRole','status','upstreamCode','upstreamHint','startIndex','endIndex','beforeBatches','afterBatches','retainedBatches','removedBatches','candidateBatches','archived','retryDelayMs','stackFrames','validationIssues'];
 const PERSONA_COMPACT_RESPONSE_KEYS=['bodyChars','contentType','repairAttempted'];
 /** Local bounded diagnostics; explicitly typed, redacted failure excerpts only. */
-export function createRuntimeLog({getStore,onChange=()=>{},now=()=>Date.now(),ioWaitMs=1000} = {}) {
+export function createRuntimeLog({getStore,onChange=()=>{},now=()=>Date.now(),ioWaitMs=1000,canRecover=()=>true} = {}) {
   let entries=[],store,loaded=false,loading,queue=Promise.resolve(),nextRun=0,nextId=0,persistence='not_loaded';
+  let runOffset=0;
   let pending=false,writing=false,droppedEntries=0,partialRuns=[],storageFailure=null,legacyRetentionUnknown=false;
   let timer=null,entryBytes=2;
   const byteSize=e=>new TextEncoder().encode(JSON.stringify(e)).length;
@@ -99,26 +100,53 @@ export function createRuntimeLog({getStore,onChange=()=>{},now=()=>Date.now(),io
     droppedEntries+=removed.length;
     const retained=new Set(entries.map(e=>e.run));partialRuns=[...new Set([...partialRuns,...removed.map(e=>e.run)])].filter(r=>retained.has(r));
   }
+  function logReadFailed(error) {
+    if(!canRecover())return;
+    loaded=true;
+    persistence='unavailable';
+    storageFailure=safeLogDetails({...errorDiagnostics(error),storageStage:'read',storageArtifact:'runtime_log'});
+    notify();
+  }
+  async function readStoredLog() {
+    const candidate=productStoreFromSession({store:await getStore()});
+    const found=await candidate.tryGetJson(RUNTIME_LOG_ADDRESS);
+    if(!canRecover())return;
+    const hasLiveEntries=entries.length>0;
+    if(found.found){
+      const document=found.value;
+      if(document?.version!==1||!Array.isArray(document.entries))throw Object.assign(new Error('invalid log document'),{details:{reason:'log_document_invalid'}});
+      const previous=document.entries.map(safeEntry).filter(Boolean);
+      const lastId=Math.max(0,...previous.map(e=>e.id));
+      const lastRun=Math.max(0,...previous.map(e=>e.run));
+      // Runs started during a slow read keep their caller's handle. Only
+      // their persisted numbers move above the existing history.
+      if(nextRun>0||hasLiveEntries){
+        runOffset=previous.length ? lastRun+1 : 0;
+        entries=entries.map(e=>({...e,id:e.id+lastId,run:e.run+runOffset}));
+        partialRuns=partialRuns.map(run=>run+runOffset);
+      }else nextRun=lastRun;
+      nextId+=lastId;
+      entries=[...previous,...entries];
+      entryBytes=2+entries.reduce((n,e)=>n+byteSize(e)+1,0);
+      droppedEntries+=(Number.isSafeInteger(document.droppedEntries)?Math.max(0,document.droppedEntries):0)+document.entries.length-previous.length;
+      legacyRetentionUnknown=document.diagnosticVersion!==2||document.legacyRetentionUnknown===true;
+      if(Array.isArray(document.partialRuns))partialRuns=[...document.partialRuns.filter(Number.isSafeInteger),...partialRuns];
+      trim();
+    }
+    store=candidate;
+    loaded=true;
+    persistence='ready';
+    storageFailure=null;
+    if(hasLiveEntries)void persist();
+    notify();
+  }
   async function load() {
     if(loaded)return;
     if(loading)return loading;
-    loading=(async()=>{
-      try {
-        const loadedStore=await bounded((async()=>{const candidate=productStoreFromSession({store:await getStore()});return {candidate,found:await candidate.tryGetJson(RUNTIME_LOG_ADDRESS)};})());
-        const {candidate,found}=loadedStore;
-        if(found.found){
-          if(found.value?.version!==1||!Array.isArray(found.value.entries))throw Object.assign(new Error('invalid log document'),{details:{reason:'log_document_invalid'}});
-          entries=found.value.entries.map(safeEntry).filter(Boolean);entryBytes=2+entries.reduce((n,e)=>n+byteSize(e)+1,0);
-          droppedEntries=Number.isSafeInteger(found.value.droppedEntries)?Math.max(0,found.value.droppedEntries):0;
-          droppedEntries+=found.value.entries.length-entries.length;
-          legacyRetentionUnknown=found.value.diagnosticVersion!==2||found.value.legacyRetentionUnknown===true;
-          partialRuns=Array.isArray(found.value.partialRuns)?found.value.partialRuns.filter(Number.isSafeInteger):[];trim();
-          nextRun=Math.max(0,...entries.map(e=>e.run));nextId=Math.max(0,...entries.map(e=>e.id));
-        }
-        store=candidate;persistence='ready';
-      } catch(error) {store=null;persistence='unavailable';storageFailure=safeLogDetails({...errorDiagnostics(error),storageStage:'read',storageArtifact:'runtime_log'});}
-      loaded=true;notify();
-    })().finally(()=>{loading=null;});return loading;
+    // The caller's wait is bounded. The original read can still settle and
+    // restore persistence, without starting another read or dropping entries.
+    loading=bounded(readStoredLog().catch(logReadFailed)).catch(logReadFailed).finally(()=>{loading=null;});
+    return loading;
   }
   function persist() {
     clearTimeout(timer);timer=null;
@@ -143,7 +171,9 @@ export function createRuntimeLog({getStore,onChange=()=>{},now=()=>Date.now(),io
     }).finally(()=>{writing=false;});return queue;
   }
   function record({run,task,phase,level='info',details={}}) {
-    const entry=safeEntry({id:++nextId,run:Number.isSafeInteger(run)?run:++nextRun,task:Object.hasOwn(LOG_TASKS,task)?task:'operation',phase:Object.hasOwn(LOG_PHASES,phase)?phase:'failed',level,details,at:now(),pluginVersion:PRODUCT_VERSION});
+    const localRun=Number.isSafeInteger(run)&&run>=0?run:nextRun+1;
+    nextRun=Math.max(nextRun,localRun);
+    const entry=safeEntry({id:++nextId,run:localRun+runOffset,task:Object.hasOwn(LOG_TASKS,task)?task:'operation',phase:Object.hasOwn(LOG_PHASES,phase)?phase:'failed',level,details,at:now(),pluginVersion:PRODUCT_VERSION});
     if(!entry)return;
     entries.push(entry);entryBytes+=byteSize(entry)+1;trim();notify();
     // Keep every entry in memory; coalesce disk writes, not diagnostics.
@@ -155,7 +185,7 @@ export function createRuntimeLog({getStore,onChange=()=>{},now=()=>Date.now(),io
     load,record,async start(task,details={}){await load();const run=++nextRun;record({run,task,phase:'start',details});return run;},
     get state(){return {entries:clone(entries),persistence,limit:RUNTIME_LOG_LIMIT,byteLimit:RUNTIME_LOG_BYTES,droppedEntries,partialRuns:clone(partialRuns),legacyRetentionUnknown,storageFailure:clone(storageFailure)};},
     async flush(){try{await bounded(timer!==null?persist():queue);}catch(error){persistence='pending';storageFailure=safeLogDetails({...errorDiagnostics(error),storageStage:'write',storageArtifact:'runtime_log'});notify();}},
-    async clear(){await load();entries=[];entryBytes=2;droppedEntries=0;partialRuns=[];legacyRetentionUnknown=false;nextId=0;nextRun=0;storageFailure=null;notify();await persist();if(!store||persistence!=='saved')throw new Error('日志清空未通过保存确认，请重试');},
+    async clear(){await load();if(!store)throw new Error('日志清空未通过保存确认，请重试');entries=[];entryBytes=2;droppedEntries=0;partialRuns=[];legacyRetentionUnknown=false;storageFailure=null;notify();await persist();if(persistence!=='saved')throw new Error('日志清空未通过保存确认，请重试');},
     async export({filter}={}){await load();
       // Drain already-queued error callbacks, not their storage promises. A
       // failed action immediately followed by export must include its error.
