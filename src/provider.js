@@ -18,6 +18,7 @@ export const PROVIDER_RESOURCES = Object.freeze({
   models: '/models',
   rerank: '/rerank',
 });
+export const GOOGLE_AI_STUDIO_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/openai';
 
 function trimSlashes(value) {
   return String(value ?? '').replace(/^\/+|\/+$/gu, '');
@@ -46,8 +47,8 @@ function ensureUrl(value) {
 }
 
 /**
- * Resolve only the resource selected by the caller.  In particular, `/v1` is
- * never added implicitly and exact mode does not attempt model-list guessing.
+ * Resolve the selected resource. Only Google's unambiguous API shorthand
+ * expands to a versioned compatibility base. Exact addresses pass through.
  */
 export function resolveProviderEndpoint(profile = {}, resource = 'chat') {
   const mode = normalizeMode(profile);
@@ -55,7 +56,13 @@ export function resolveProviderEndpoint(profile = {}, resource = 'chat') {
   const url = ensureUrl(input);
   if (mode === 'exact') return String(input).trim();
   const path = resourcePath(resource, profile);
-  const existing = url.pathname.replace(/\/$/u, '');
+  let existing = url.pathname.replace(/\/$/u, '');
+  const googleBase = new URL(GOOGLE_AI_STUDIO_API_BASE);
+  if (url.origin === googleBase.origin && !url.username && !url.password && !url.search && !url.hash &&
+      (existing === '' || existing === '/v1beta') &&
+      [PROVIDER_RESOURCES.chat, PROVIDER_RESOURCES.models, PROVIDER_RESOURCES.embeddings].includes(path)) {
+    existing = googleBase.pathname;
+  }
   if (existing === path || existing.endsWith(path)) return url.toString().replace(/\/$/u, '');
   url.pathname = `${existing}/${trimSlashes(path)}`;
   return url.toString().replace(/\/$/u, '');

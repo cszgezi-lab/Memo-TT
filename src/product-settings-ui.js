@@ -131,7 +131,8 @@ export function apiSettingsHTML() {
     ${['assistant','supplement','knowledge'].includes(kind) ? setting(kind==='knowledge'?'knowledgeFollowAssistant':`${kind}FollowSummary`) + `<p class="memo-inherited memo-help" data-inherited="${kind}"></p>` : ''}
     <div data-api-fields="${kind}">
     <div data-api-connection="${kind}">
-    ${setting(`${prefix}Endpoint`, 'API 地址', `基础地址只补 ${resource}，不自动添加 /v1。`, '填写你的服务商地址')}
+    ${setting(`${prefix}Endpoint`, 'API 地址', `通常填写服务商给出的基础地址，Memo 会补 ${resource}。`, '填写你的服务商地址')}
+    ${kind==='summary' ? button('fill-google-ai-studio', '填入 Google AI Studio 地址') : ''}
     ${field('API Key', `<input type="password" autocomplete="new-password" data-key="${kind}" placeholder="无需认证的服务可以留空"><small class="memo-help">随 API 保存到本机 TT 数据，重启自动恢复；不加入助手消息或拾忆导出。${['embedding','rerank'].includes(kind) ? '硅基流动需要填写 Key。' : ''}</small>`)}
     <p class="memo-help" data-key-status="${kind}" role="status"></p>
     </div>
@@ -139,7 +140,7 @@ export function apiSettingsHTML() {
     <label class="memo-field"><span class="memo-sr-only">${title}模型列表</span><select data-model-list="${kind}" disabled><option value="">先拉取模型列表，也可以在下方直接输入</option></select></label>
     ${setting(`${prefix}Model`, '模型名称', '', kind==='supplement'?'留空沿用总结模型；也可选择快速模型':'选择列表中的模型，或手动填写')}
     <p class="memo-help" role="status" data-model-status="${kind}"></p></div>
-    <details hidden class="memo-advanced memo-option-group" data-api-internals><summary hidden>连接参数</summary>${setting(`${prefix}EndpointMode`, '地址如何使用', `默认只补 ${resource}，绝不补 /v1。填完整接口地址时可选“不补路径”。`)}${setting(`${prefix}AuthMode`, 'Key 发送方式', '一般保持“标准 Key”；不需要 Key 可留空或选“无需 Key”。只有服务商明确要求时才改用 x-api-key。')}${field('模型列表地址（可选）', `<input data-models-url="${kind}" placeholder="留空时按 API 地址推导 /models" autocomplete="off">`)}${['embedding','rerank'].includes(kind) ? button(`recommend-${kind}`, '补齐推荐值') : ''}${button(`forget-key-${kind}`,'清除已保存 Key')}</details>
+    <details hidden class="memo-advanced memo-option-group" data-api-internals><summary hidden>连接参数</summary>${setting(`${prefix}EndpointMode`, '地址如何使用', `基础地址会补 ${resource}。填完整接口地址时可选“不补路径”。`)}${setting(`${prefix}AuthMode`, 'Key 发送方式', '一般保持“标准 Key”；不需要 Key 可留空或选“无需 Key”。只有服务商明确要求时才改用 x-api-key。')}${field('模型列表地址（可选）', `<input data-models-url="${kind}" placeholder="留空时按 API 地址推导 /models" autocomplete="off">`)}${['embedding','rerank'].includes(kind) ? button(`recommend-${kind}`, '补齐推荐值') : ''}${button(`forget-key-${kind}`,'清除已保存 Key')}</details>
     </div>${kind==='knowledge'?advanced('分析参数',['knowledgeOutputTokens']):''}<div class="memo-actions">${button(`save-api-${kind}`, '保存', true)}${button(`test-${kind}`, '测试连接')}</div></div></details>`;
   const entries=Object.entries(API_INFO).sort(([a],[b])=>order.indexOf(a)-order.indexOf(b));
   const group=(attribute,title,kinds)=>`<details class="memo-connection-group memo-option-group" ${attribute}><summary>${title}</summary>${entries.filter(([kind])=>kinds.includes(kind)).map(renderCard).join('')}</details>`;
