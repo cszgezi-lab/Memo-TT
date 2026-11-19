@@ -1,4 +1,4 @@
-# Memo · TT版 1.0.67
+# Memo · TT版 1.0.68
 
 安装地址：https://github.com/cszgezi-lab/Memo-TT
 
@@ -102,4 +102,4 @@
 
 1.0.66：导入档案时，可直接覆盖当前聊天记忆，旧存档保留。
 
-1.0.67：设置 → API → 总结模型，点击「填入 Google AI Studio 地址」，再填写 AI Studio 的 API Key、选择 Gemini 模型并保存。使用 [Google 的 OpenAI 兼容接口](https://ai.google.dev/gemini-api/docs/openai)。
+1.0.68：设置 → API → 总结。使用转换桥时，填写转换桥提供的 OpenAI 兼容 API 地址、模型名称和 Key，可通过已保存的连接预设切换。

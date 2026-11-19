@@ -21,8 +21,6 @@ import { failureText } from '../src/product-feedback.js';
 import { DIAGNOSTIC_ACTIONS } from '../src/diagnostics.js';
 import { summarySelection } from '../src/product-batches.js';
 import { MAX_PARALLEL_SUMMARY_BATCHES } from '../src/provider-scheduler.js';
-import { GOOGLE_AI_STUDIO_API_BASE } from '../src/provider.js';
-import { credentialOrigin } from '../src/product-credentials.js';
 import { runtimeLogHTML, mountRuntimeLog } from './product-runtime-log.js';
 import {mountSummaryApiPresets} from './product-api-presets.js';
 import {SUMMARY_API_PRESET_KEYS} from '../src/product-api-presets.js';
@@ -755,20 +753,6 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  async function savePatch(patch,save=()=>app.saveSettings(patch)){await save();for(const [key,value]of Object.entries(patch)){const f=$(`[data-setting="${key}"]`);if(f&&(f.type==='checkbox'?f.checked===value:f.value===String(value)))dirtyApi.delete(key);}}
  actions['save-settings']=async()=>{if(currentPage==='api'){for(const kind of Object.keys(API_INFO))await saveApiCard(kind);await savePatch(collect($('[data-view="api"]')));}else await savePatch(collect(currentPage==='modules'?$('[data-record-panel="compose"]'):$(`[data-view="${currentPage}"]`)));};
  actions['save-persona-compat']=()=>savePatch({dynamicPersonaJsonMode:Boolean($('[data-setting="dynamicPersonaJsonMode"]')?.checked)});
- actions['fill-google-ai-studio']=()=>{
-   const endpoint=$('[data-setting="providerEndpoint"]');
-   const key=$('[data-key="summary"]');
-   if(credentialOrigin(endpoint.value)!==credentialOrigin(GOOGLE_AI_STUDIO_API_BASE))key.value='';
-   const patch={providerEndpoint:GOOGLE_AI_STUDIO_API_BASE,providerEndpointMode:'base',providerAuthMode:'bearer'};
-   for(const [setting,value] of Object.entries(patch)){
-     $(`[data-setting="${setting}"]`).value=value;
-     dirtyApi.add(setting);
-   }
-   $('[data-models-url="summary"]').value='';
-   for(const kind of ['summary','assistant','supplement','knowledge'])resetModels(kind);
-   syncInherited();
-   $('[data-model-status="summary"]').textContent='填写 AI Studio 的 API Key，拉取或填写 Gemini 模型，然后保存。';
- };
  async function saveApiCard(kind){const budgetRoot=$('[data-api-budgets="'+kind+'"]');if(budgetRoot)await savePatch(collect(budgetRoot));const input=$(`[data-key="${kind}"]`),value=input.value,patch=apiPatch(kind);if(value)app.setKey(kind,value,patch[`${API_INFO[kind].prefix}Endpoint`]);await savePatch(patch,()=>app.saveApi(kind,patch,{keyValue:value}));if(input.value===value)input.value='';}
  for(const kind of Object.keys(API_INFO)){
    actions[`save-api-${kind}`]=()=>saveApiCard(kind);

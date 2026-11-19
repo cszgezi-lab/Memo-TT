@@ -1,7 +1,7 @@
 import {clone,sha256} from './utils.js';
 import {defaultProductSettings,validateProductPatch} from './product-settings.js';
 import {credentialOrigin} from './product-credentials.js';
-import {isMissingProductEntry} from './product-host-adapters.js';
+import {optionalLegacyRead} from './memo-legacy-memory.js';
 import {verifiedWrite} from './reliable-storage.js';
 import {memoStorageLock} from './memo-storage-lock.js';
 export const SUMMARY_API_PRESET_KEYS=Object.freeze(['providerEndpoint','providerEndpointMode','providerModel','providerAuthMode','summaryRequestMode','summaryStreaming','summaryDeadlineMs','deadlineMs','chatRequestsPerMinute','inputBudgetUnits','outputBudgetUnits']);
@@ -15,7 +15,19 @@ export function createSummaryApiPresets({getStore}){
   const settings=validateProductPatch(item.settings);if(!settings.providerEndpoint||!settings.providerModel||item.key&&!credentialOrigin(settings.providerEndpoint))throw Error('请先填写预设的 API 地址和模型名称');
   return {...item,settings};
  };
- async function read(store){try{const found=store.tryGetJson?await store.tryGetJson(address):{found:true,value:await store.getJson(address)};if(!found?.found||found.value==null)return [];const doc=found.value;if(doc.version!==1||!Array.isArray(doc.items)||doc.items.length>30)throw Error('invalid');const items=doc.items.map(validate);if(new Set(items.map(x=>x.id)).size!==items.length)throw Error('invalid');return items;}catch(error){if(isMissingProductEntry(error))return [];throw Error('本机连接预设读取失败，未修改当前 API');}}
+ async function read(store){
+  try{
+   const found=await optionalLegacyRead(store,address);
+   if(!found?.found||found.value==null)return [];
+   const doc=found.value;
+   if(doc.version!==1||!Array.isArray(doc.items)||doc.items.length>30)throw Error('invalid');
+   const items=doc.items.map(validate);
+   if(new Set(items.map(item=>item.id)).size!==items.length)throw Error('invalid');
+   return items;
+  }catch{
+   throw Error('本机连接预设读取失败，未修改当前 API');
+  }
+ }
  return {
   async list(){return (await read(await getStore())).map(publicItem);},
   async get(id){const item=(await read(await getStore())).find(x=>x.id===id);if(!item)throw Error('所选连接预设不存在，请重新选择');return clone(item);},
